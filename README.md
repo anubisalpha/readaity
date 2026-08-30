@@ -5,6 +5,12 @@ A local, DRM-free **ebook & comic** reader for Windows. Built with **Tauri 2 + R
 Everything stays on your machine — you point it at folders of books and it builds
 a library. No cloud, no accounts, no vendor lock-in.
 
+## Download
+
+Windows installer: **[latest release](../../releases/latest)**
+(`readaity_x.y.z_x64-setup.exe`). Unsigned, so SmartScreen warns on first run —
+*More info → Run anyway*.
+
 > **Scope note:** Readaity opens **DRM-free** files you own. It does not, and will
 > not, strip or circumvent DRM from protected/purchased ebooks — that's legally
 > fraught (DMCA §1201 / EU Copyright Directive) and out of scope by design.
