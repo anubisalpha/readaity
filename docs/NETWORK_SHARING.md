@@ -41,9 +41,11 @@ book.
 - Settings UI (new "Sharing" tab): the toggle, port field, display name, the
   PIN field (numeric, 6–10 digits, with a "generate random" button and a
   show/hide), the **certificate fingerprint** (SHA-256, for peer verification)
-  with "regenerate", an optional client-IP allowlist box, and — when running —
-  the reachable URLs (`https://<each-lan-ip>:<port>`) plus a QR of the primary
-  one and a live connection/audit list.
+  with "regenerate", an optional client-IP allowlist box, a **"Trust this
+  device"** panel (`/trust` URL + QR + per-platform steps — see Browsing from a
+  web browser), and — when running — the reachable URLs
+  (`https://<each-lan-ip>:<port>`) plus a QR of the primary one and a live
+  connection/audit list.
 
 ### HTTP surface
 
@@ -54,6 +56,8 @@ requires auth (see Security).
 |---|---|---|
 | GET | `/` | Self-contained browse UI (single HTML file, `include_str!`-embedded, inline CSS/JS, no external assets) |
 | GET | `/healthz` | `{ "app": "readaity", "version": "x.y.z", "fingerprint": "<sha256>" }` — unauthenticated, used for discovery probing and cert pinning |
+| GET | `/trust` | The server's certificate as `application/x-pem-file` (`readaity-<name>.pem`), for "trust this device". Unauthenticated — it's a public cert, not the key |
+| GET | `/trust/help` | A short static page with per-platform install steps (rendered from the same explainer the Sharing tab uses) |
 | POST | `/api/auth` | Body `{ pin }` → sets an auth cookie on success, 401 on failure (rate-limited + lockout) |
 | GET | `/api/manifest` | `{ name, version, libraries: { comics, ebooks }, generated_at }` — cheap summary for peers |
 | GET | `/api/books?library=comics\|ebooks` | Array of `{ id, title, format, size, page_count, md5, has_cover }`. `id` is an opaque token (see below), **never a filesystem path** |
@@ -93,9 +97,12 @@ The browse UI and peers must never see or send real paths.
 - The client half (b5) builds its `rustls::ClientConfig` with the same
   TLS-1.3-only restriction, so a downgraded peer is rejected before the
   fingerprint check.
-- Browsers will show a "not trusted" warning (expected for self-signed) — the
-  Settings tab explains this and shows the SHA-256 fingerprint so the user can
-  confirm it matches.
+- Browsers will show a "not trusted" warning (expected for self-signed). Two
+  paths past it — a one-time click-through, or installing the cert once so the
+  warning is gone for good. See **Browsing from a web browser** below.
+- **No HSTS.** The server never sends `Strict-Transport-Security`. A self-signed
+  setup where the IP, port or cert can change must always allow a fresh
+  exception — HSTS would wedge the browser with no way through.
 - **Readaity-to-Readaity trust is fingerprint pinning, not the CA chain.** The
   discovering peer reads the fingerprint from `/healthz` (or mDNS TXT), shows it
   to the user on first connect ("Trust <name> — fingerprint AB:CD:…?"), and pins
@@ -149,7 +156,9 @@ The browse UI and peers must never see or send real paths.
   same-origin. Peers are not browsers and don't need it.
 - Security headers on every response: `X-Content-Type-Options: nosniff`,
   `Referrer-Policy: no-referrer`, a restrictive `Content-Security-Policy` for the
-  browse UI, `Cache-Control: no-store` on API responses.
+  browse UI, `Cache-Control: no-store` on API responses. **No
+  `Strict-Transport-Security`** (see TLS — HSTS would trap the browser on a
+  self-signed setup).
 
 #### Operational
 
@@ -179,6 +188,52 @@ The browse UI and peers must never see or send real paths.
 One HTML file, same dark theme as the app. Library switcher, cover grid,
 search-by-title, click a book → download. Fully keyboard accessible. Degrades to
 a plain list if JS is disabled. No build step — it's hand-written and embedded.
+
+### Browsing from a web browser
+
+Any device with a modern browser can use `/` — but the self-signed cert means
+the first visit hits the browser's "not private" interstitial. Two ways through:
+
+**A. Click through (default, zero setup).**
+The Sharing tab and the PIN-prompt page both spell out the exact steps per
+browser ("click *Advanced*, then *Proceed to …*"). It's a one-time action per
+device — the browser remembers the exception. Fine for a quick "grab that book
+onto my tablet".
+
+**B. Trust this device (removes the warning for good).**
+- The Sharing tab shows a **"Trust this device"** panel: the `/trust` URL, a QR
+  of it, the SHA-256 fingerprint to verify against, and collapsible per-platform
+  steps. `/trust/help` serves the same steps as a page reachable from the phone
+  itself.
+- Steps, in brief:
+  - **iOS/iPadOS** — open `/trust` in Safari → install the profile in Settings →
+    **also** enable it under *General → About → Certificate Trust Settings*
+    (two separate screens; the second is the one people miss).
+  - **Android** — download from `/trust` → *Settings → Security → Encryption &
+    credentials → Install a certificate → CA certificate*. Chrome/Firefox on
+    Android honour user-added CAs for browsing.
+  - **Windows** — double-click the `.pem` → *Install Certificate → Local Machine
+    → Trusted Root Certification Authorities*.
+  - **macOS** — open in Keychain Access → *System* keychain → set to *Always
+    Trust*.
+  - **Firefox (any OS)** — *Settings → Certificates → View Certificates →
+    Import*, tick "trust for websites" (Firefox has its own store).
+- After trusting, `https://<ip>:<port>` loads clean. If the cert is regenerated
+  (`share_regenerate_cert`), the old trust entry must be removed and `/trust`
+  re-run — the fingerprint on the Sharing tab will have changed.
+
+**Browser compatibility.** TLS 1.3 is required, which every browser has shipped
+since ~2020 (Chrome 70, Firefox 63, Safari 14, Edge 79). Older embedded browsers
+— some e-readers, older smart TVs, kiosks — cap at TLS 1.2 and **cannot connect
+at all**, click-through or not. Documented as a known limitation; the target
+devices are current phones/laptops.
+
+**Future — remove the warning entirely.** The Plex / Home Assistant approach: a
+publicly-trusted wildcard cert plus a DNS service that resolves
+hashed-private-IP hostnames (e.g. `a1b2c3.readaity.direct → 192.168.1.42`). No
+interstitial anywhere, no per-device trust. Needs a domain, a wildcard cert and
+a tiny DNS service Readaity doesn't run yet — out of scope for b4, noted as the
+eventual clean answer.
 
 ---
 
@@ -240,7 +295,7 @@ a plain list if JS is disabled. No build step — it's hand-written and embedded
 
 | Phase | Ship | Contents |
 |---|---|---|
-| b4 | Share server | HTTPS `axum` server (self-signed cert via `rcgen`, `rustls`, **TLS 1.3 only**, AEAD suites), `settings` config, opaque-id map, Argon2 PIN (6–10 digits) with per-IP lockout + global throttle + route rate-limiting, private-range guard + optional allowlist, connection/bandwidth caps, audit log, security headers, embedded browse UI, Settings "Sharing" tab (PIN, fingerprint, allowlist, live connections) |
+| b4 | Share server | HTTPS `axum` server (self-signed cert via `rcgen`, `rustls`, **TLS 1.3 only**, AEAD suites, no HSTS), `settings` config, opaque-id map, Argon2 PIN (6–10 digits) with per-IP lockout + global throttle + route rate-limiting, private-range guard + optional allowlist, connection/bandwidth caps, audit log, security headers, embedded browse UI, `/trust` cert download + `/trust/help`, Settings "Sharing" tab (PIN, fingerprint, "Trust this device", allowlist, live connections) |
 | b5 | Discovery + import | `mdns-sd` advertise + browse, "Network" sidebar view, TLS fingerprint trust-on-first-use + pinning, peer PIN prompt, multi-select import with md5 dedupe and `rescan` |
 
 New crates (b4): `axum`, `axum-server` (rustls), `tokio-rustls` / `rustls`,
