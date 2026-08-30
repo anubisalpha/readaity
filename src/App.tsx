@@ -23,6 +23,7 @@ import {
   removeBook,
   removeFolder,
   removePath,
+  rescan,
   resumeIndexing,
   setProgress,
   setSetting,
@@ -172,6 +173,15 @@ function App() {
     [library],
   );
 
+  // Re-walk the folders for added / removed / changed files; only new or
+  // changed books are swept. Covers and metadata of unchanged books are kept.
+  const handleRescan = useCallback(async () => {
+    setStatus({ phase: "scanning", current: 0, total: 0 });
+    setBooks(sortBooks(await rescan(library)));
+  }, [library]);
+
+  // Re-walk the folders, then reset every book so covers, page counts and
+  // hashes are rebuilt from scratch with the current code.
   const handleReindex = useCallback(async () => {
     setStatus({ phase: "scanning", current: 0, total: 0 });
     setBooks(sortBooks(await reindex(library)));
@@ -220,6 +230,7 @@ function App() {
         ebooksCount={counts.ebooks}
         onSwitchLibrary={setLibrary}
         onOpenSettings={() => setSettingsOpen(true)}
+        onRescan={handleRescan}
         onReindex={handleReindex}
         onAddFolder={handleAddFolder}
         onRemoveFolder={handleRemoveFolder}
