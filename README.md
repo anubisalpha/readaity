@@ -130,3 +130,10 @@ SmartScreen will warn on first run.
 cd src-tauri
 cargo test
 ```
+
+## License
+
+All rights reserved — see [LICENSE](LICENSE). This repository is public so the
+code and its history are visible, but it is not open-source: no licence is
+granted to use, copy, modify, or redistribute it. Running an official released
+build for personal use is fine.
