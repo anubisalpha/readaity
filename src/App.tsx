@@ -10,6 +10,7 @@ import type {
 } from "./types";
 import {
   addFolder,
+  getSetting,
   libraryCounts,
   listBooks,
   listFolders,
@@ -24,6 +25,7 @@ import {
   removePath,
   resumeIndexing,
   setProgress,
+  setSetting,
 } from "./lib/api";
 import { Library } from "./components/Library";
 import { Reader } from "./components/Reader";
@@ -60,6 +62,9 @@ function App() {
   const [folders, setFolders] = useState<FolderInfo[]>([]);
   const [status, setStatus] = useState<ScanStatus>(IDLE);
   const [library, setLibrary] = useState<LibraryKind>("comics");
+  // Which library opens on launch and leads the sidebar switcher.
+  const [firstLibrary, setFirstLibrary] = useState<LibraryKind>("comics");
+  const [booted, setBooted] = useState(false);
   const [ready, setReady] = useState(false);
   const [openBook, setOpenBook] = useState<BookRow | null>(null);
   const [pendingAdd, setPendingAdd] = useState<PendingAdd | null>(null);
@@ -97,13 +102,34 @@ function App() {
     return () => unlisteners.forEach((u) => u());
   }, [refreshCounts]);
 
+  // Read the saved "show first" preference once, before the first load.
+  useEffect(() => {
+    getSetting("default_library")
+      .then((v) => {
+        const first: LibraryKind = v === "ebooks" ? "ebooks" : "comics";
+        setFirstLibrary(first);
+        setLibrary(first);
+      })
+      .catch((e) => console.error("read default library failed", e))
+      .finally(() => setBooted(true));
+  }, []);
+
   // Load (and reload) the active library's data.
   useEffect(() => {
+    if (!booted) return;
     (async () => {
       await loadLibrary(library);
       setReady(true);
     })();
-  }, [library, loadLibrary]);
+  }, [booted, library, loadLibrary]);
+
+  const handleSetFirstLibrary = useCallback((lib: LibraryKind) => {
+    setFirstLibrary(lib);
+    setLibrary(lib);
+    setSetting("default_library", lib).catch((e) =>
+      console.error("save default library failed", e),
+    );
+  }, []);
 
   const doAdd = useCallback(
     async (path: string, mode: FolderMode) => {
@@ -189,6 +215,7 @@ function App() {
         folders={folders}
         status={status}
         library={library}
+        firstLibrary={firstLibrary}
         comicsCount={counts.comics}
         ebooksCount={counts.ebooks}
         onSwitchLibrary={setLibrary}
@@ -217,6 +244,8 @@ function App() {
         <div className="overlay-full">
           <Settings
             library={library}
+            firstLibrary={firstLibrary}
+            onSetFirstLibrary={handleSetFirstLibrary}
             onClose={() => setSettingsOpen(false)}
             onBooksChanged={(bs) => setBooks(sortBooks(bs))}
           />

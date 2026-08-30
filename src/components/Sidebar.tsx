@@ -4,6 +4,7 @@ import type { TreeNode } from "../lib/tree";
 
 interface Props {
   library: LibraryKind;
+  firstLibrary: LibraryKind;
   onSwitchLibrary: (lib: LibraryKind) => void;
   tree: TreeNode[];
   cwd: string | null;
@@ -16,6 +17,7 @@ interface Props {
 /** Left column: library switcher on top, Windows-Explorer-style folder tree below. */
 export function Sidebar({
   library,
+  firstLibrary,
   onSwitchLibrary,
   tree,
   cwd,
@@ -27,18 +29,18 @@ export function Sidebar({
   return (
     <aside className="sidebar">
       <div className="lib-switcher">
-        <button
-          className={`lib-tab${library === "comics" ? " active" : ""}`}
-          onClick={() => onSwitchLibrary("comics")}
-        >
-          Comics
-        </button>
-        <button
-          className={`lib-tab${library === "ebooks" ? " active" : ""}`}
-          onClick={() => onSwitchLibrary("ebooks")}
-        >
-          Ebooks
-        </button>
+        {(firstLibrary === "ebooks"
+          ? (["ebooks", "comics"] as LibraryKind[])
+          : (["comics", "ebooks"] as LibraryKind[])
+        ).map((kind) => (
+          <button
+            key={kind}
+            className={`lib-tab${library === kind ? " active" : ""}`}
+            onClick={() => onSwitchLibrary(kind)}
+          >
+            {kind === "comics" ? "Comics" : "Ebooks"}
+          </button>
+        ))}
       </div>
 
       <button

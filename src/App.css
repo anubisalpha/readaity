@@ -489,6 +489,40 @@ body {
   color: var(--text-dim);
   font-size: 13px;
 }
+.settings-field {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 18px;
+}
+.settings-field-label {
+  font-size: 13px;
+  color: var(--text);
+}
+.seg {
+  display: inline-flex;
+  padding: 2px;
+  gap: 4px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.seg-btn {
+  padding: 6px 16px;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.seg-btn:hover {
+  color: var(--text);
+}
+.seg-btn.active {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
 .settings-row-actions {
   display: flex;
   align-items: center;

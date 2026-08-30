@@ -45,6 +45,9 @@ list are shared across both.
       without deleting it from disk; restore individually or all at once
 - [x] Re-index / re-scan on demand (picks up new files and newly-supported formats)
 - [x] Invalid/corrupt files collected under a note instead of failing silently
+- [x] Settings → **Show first** — pick whether Comics or Ebooks is the library
+      Readaity opens on and the one that leads the sidebar switcher (persisted
+      in the DB `settings` table)
 
 ### Roadmap
 
@@ -82,7 +85,8 @@ src-tauri/src/
   mobi.rs      PalmDOC/MOBI decode → HTML (DRM flag detection, EXTH cover)
   rtf.rs       RTF → HTML
   db.rs        SQLite: folders + books, two-phase status lifecycle, cover
-               BLOBs, reading progress, exclusions, duplicate groups
+               BLOBs, reading progress, exclusions, duplicate groups,
+               key/value settings
   library.rs   quick_scan (phase 1) + validate_one (phase 2) + move planning
   lib.rs       Tauri commands + background sweep emitting book-updated events
 
@@ -96,7 +100,7 @@ src/
     Reader.tsx         Comic paged image view
     EbookReader.tsx    Routes an ebook to the right renderer by format
     EpubReader / PdfReader / HtmlReader / TxtReader
-    Settings.tsx       Removed-items list + duplicate detection tabs
+    Settings.tsx       General prefs + removed-items list + duplicate detection
     MoveDialog.tsx     Drag-to-move collision handling
   App.tsx              Folder management, live sweep merge, view routing
 ```

@@ -110,6 +110,22 @@ fn remove_path(app: AppHandle, path: String, library: String) -> Result<Vec<Book
     list_books(app, library)
 }
 
+/// Read a persisted app preference by key (`None` if never set).
+#[tauri::command]
+fn get_setting(app: AppHandle, key: String) -> Result<Option<String>, String> {
+    let db = app.state::<AppDb>();
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    db::get_setting(&conn, &key)
+}
+
+/// Persist an app preference.
+#[tauri::command]
+fn set_setting(app: AppHandle, key: String, value: String) -> Result<(), String> {
+    let db = app.state::<AppDb>();
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    db::set_setting(&conn, &key, &value)
+}
+
 #[tauri::command]
 fn list_folders(app: AppHandle, library: String) -> Result<Vec<FolderRow>, String> {
     let db = app.state::<AppDb>();
@@ -562,6 +578,8 @@ pub fn run() {
             remove_book,
             remove_path,
             list_folders,
+            get_setting,
+            set_setting,
             library_counts,
             probe_folder,
             plan_move,

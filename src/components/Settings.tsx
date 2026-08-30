@@ -14,11 +14,13 @@ import {
 
 interface Props {
   library: LibraryKind;
+  firstLibrary: LibraryKind;
+  onSetFirstLibrary: (lib: LibraryKind) => void;
   onClose: () => void;
   onBooksChanged: (books: BookRow[]) => void;
 }
 
-type Tab = "removed" | "exact" | "similar";
+type Tab = "general" | "removed" | "exact" | "similar";
 
 function splitPath(p: string): { name: string; dir: string } {
   const parts = p.split(/[\\/]/).filter(Boolean);
@@ -31,8 +33,14 @@ function formatSize(bytes: number): string {
   return `${bytes} B`;
 }
 
-export function Settings({ library, onClose, onBooksChanged }: Props) {
-  const [tab, setTab] = useState<Tab>("removed");
+export function Settings({
+  library,
+  firstLibrary,
+  onSetFirstLibrary,
+  onClose,
+  onBooksChanged,
+}: Props) {
+  const [tab, setTab] = useState<Tab>("general");
   const [exclusions, setExclusions] = useState<string[]>([]);
   const [exact, setExact] = useState<DupGroup[]>([]);
   const [similar, setSimilar] = useState<DupGroup[]>([]);
@@ -109,6 +117,7 @@ export function Settings({ library, onClose, onBooksChanged }: Props) {
     });
 
   const NAV: { id: Tab; label: string; count: number }[] = [
+    { id: "general", label: "General", count: 0 },
     { id: "removed", label: "Removed from library", count: exclusions.length },
     { id: "exact", label: "Exact duplicates", count: exact.length },
     { id: "similar", label: "Possible duplicates", count: similar.length },
@@ -139,6 +148,9 @@ export function Settings({ library, onClose, onBooksChanged }: Props) {
         </nav>
 
         <div className="settings-body">
+          {tab === "general" && (
+            <GeneralTab first={firstLibrary} onSet={onSetFirstLibrary} />
+          )}
           {tab === "removed" && (
             <RemovedTab
               exclusions={exclusions}
@@ -164,6 +176,42 @@ export function Settings({ library, onClose, onBooksChanged }: Props) {
         </div>
       </div>
     </div>
+  );
+}
+
+function GeneralTab({
+  first,
+  onSet,
+}: {
+  first: LibraryKind;
+  onSet: (lib: LibraryKind) => void;
+}) {
+  const options: { id: LibraryKind; label: string }[] = [
+    { id: "comics", label: "Comics" },
+    { id: "ebooks", label: "Ebooks" },
+  ];
+  return (
+    <>
+      <p className="settings-hint">
+        Choose which library Readaity opens on. It also leads the switcher at the
+        top of the sidebar.
+      </p>
+      <div className="settings-field">
+        <span className="settings-field-label">Show first</span>
+        <div className="seg">
+          {options.map((o) => (
+            <button
+              key={o.id}
+              className={`seg-btn${first === o.id ? " active" : ""}`}
+              onClick={() => onSet(o.id)}
+              aria-pressed={first === o.id}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </>
   );
 }
 

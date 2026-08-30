@@ -66,6 +66,18 @@ export function listFolders(library: LibraryKind): Promise<FolderInfo[]> {
   return invoke<FolderInfo[]>("list_folders", { library });
 }
 
+// ---- App settings (key/value preferences) ----
+
+/** Read a persisted preference by key, or null if never set. */
+export function getSetting(key: string): Promise<string | null> {
+  return invoke<string | null>("get_setting", { key });
+}
+
+/** Persist a preference. */
+export function setSetting(key: string, value: string): Promise<void> {
+  return invoke("set_setting", { key, value });
+}
+
 export function listBooks(library: LibraryKind): Promise<BookRow[]> {
   return invoke<BookRow[]>("list_books", { library });
 }

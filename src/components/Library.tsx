@@ -27,6 +27,7 @@ interface Props {
   folders: FolderInfo[];
   status: ScanStatus;
   library: LibraryKind;
+  firstLibrary: LibraryKind;
   comicsCount: number;
   ebooksCount: number;
   onSwitchLibrary: (lib: LibraryKind) => void;
@@ -47,6 +48,7 @@ export function Library({
   folders,
   status,
   library,
+  firstLibrary,
   comicsCount,
   ebooksCount,
   onSwitchLibrary,
@@ -256,6 +258,7 @@ export function Library({
       <div className="library-body">
         <Sidebar
           library={library}
+          firstLibrary={firstLibrary}
           onSwitchLibrary={onSwitchLibrary}
           tree={tree}
           cwd={cwd}

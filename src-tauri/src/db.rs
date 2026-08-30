@@ -71,6 +71,10 @@ pub fn open(db_path: &std::path::Path) -> Result<Connection, String> {
             key       TEXT PRIMARY KEY,
             added_at  INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS settings (
+            key       TEXT PRIMARY KEY,
+            value     TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS books (
             path        TEXT PRIMARY KEY,
             folder      TEXT NOT NULL,
@@ -214,6 +218,30 @@ pub fn all_folders(conn: &Connection) -> Result<Vec<FolderRow>, String> {
         })
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+// ---------- Settings (key/value app preferences) ----------
+
+/// Read one preference, or `None` if it was never set.
+pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT value FROM settings WHERE key = ?1",
+        params![key],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+/// Insert or update one preference.
+pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO settings(key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 // ---------- Exclusions (removed-from-library, but kept on disk) ----------
