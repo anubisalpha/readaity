@@ -21,7 +21,9 @@ list are shared across both.
 
 **Ebooks** — `EPUB`, `PDF`, `MOBI` / `PRC` / `AZW` / `AZW3` (unencrypted),
 `TXT`, `RTF`. `LRF` is catalogued but not read natively — convert to EPUB
-(e.g. with Calibre) to open it fully.
+(e.g. with Calibre) to open it fully. Kindle-format support and its known gaps
+(KF8-only `.azw3`, HUFF/CDIC, `.kfx`) are written up in
+[`docs/KINDLE_READING.md`](docs/KINDLE_READING.md).
 
 - [x] Add library folders (native picker), recursively scanned **in place** —
       your existing folder structure is never touched or moved
