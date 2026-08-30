@@ -1,6 +1,6 @@
 [package]
 name = "readaity"
-version = "0.3.0"
+version = "0.4.0"
 description = "A local, DRM-free ebook & comic reader"
 authors = ["Anubis Productions"]
 edition = "2021"
@@ -32,4 +32,21 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 md-5 = "0.10"
 lopdf = "0.34"
 regex = "1"
+
+# --- Network sharing (b4): embedded HTTPS library server ---
+aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
+rustls = { version = "0.23", features = ["aws-lc-rs"] }
+rcgen = { version = "0.13", default-features = false, features = ["pem", "aws_lc_rs"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
+tokio = { version = "1", features = ["net", "rt", "io-util", "fs", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tower-http = { version = "0.6", features = ["set-header", "limit"] }
+rustls-pemfile = "2"
+argon2 = "0.5"
+local-ip-address = "0.6"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
 

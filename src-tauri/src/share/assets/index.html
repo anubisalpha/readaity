@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex" />
+<title>Readaity Share</title>
+<style>
+  :root {
+    --bg: #14161c; --bg2: #1c1f27; --line: #2b2f3a;
+    --text: #e7e9ee; --dim: #9aa1b1; --accent: #f0b429; --ink: #14161c;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { padding: 14px 18px; border-bottom: 1px solid var(--line); display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 16px; font-weight: 700; }
+  .tabs { display: flex; gap: 6px; }
+  .tab { padding: 5px 12px; border: 1px solid var(--line); background: var(--bg2); color: var(--dim); border-radius: 999px; cursor: pointer; font: inherit; }
+  .tab.active { background: var(--accent); color: var(--ink); border-color: var(--accent); font-weight: 600; }
+  #search { margin-left: auto; padding: 6px 12px; border: 1px solid var(--line); background: var(--bg2); color: var(--text); border-radius: 8px; min-width: 180px; }
+  main { padding: 18px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 16px; }
+  .book { background: var(--bg2); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
+  .cover { aspect-ratio: 2/3; background: #0e1014 center/cover no-repeat; display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: 12px; text-align: center; padding: 8px; }
+  .meta { padding: 10px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+  .title { font-size: 13px; font-weight: 600; }
+  .sub { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
+  a.dl { margin-top: auto; text-align: center; padding: 7px; background: var(--accent); color: var(--ink); text-decoration: none; border-radius: 8px; font-size: 12px; font-weight: 600; }
+  .msg { color: var(--dim); padding: 40px 0; text-align: center; }
+  .gate { max-width: 340px; margin: 60px auto; text-align: center; display: flex; flex-direction: column; gap: 14px; }
+  .gate input { padding: 10px 12px; border: 1px solid var(--line); background: var(--bg2); color: var(--text); border-radius: 8px; font: inherit; text-align: center; letter-spacing: .3em; }
+  .gate button { padding: 10px; border: none; background: var(--accent); color: var(--ink); border-radius: 8px; font: inherit; font-weight: 700; cursor: pointer; }
+  .err { color: #ff8080; font-size: 13px; min-height: 18px; }
+</style>
+</head>
+<body>
+<div id="app"><p class="msg">Loading…</p></div>
+<script>
+(function () {
+  var app = document.getElementById("app");
+  var state = { lib: "comics", q: "" };
+
+  function h(tag, attrs, kids) {
+    var el = document.createElement(tag);
+    for (var k in (attrs || {})) {
+      if (k === "text") el.textContent = attrs[k];
+      else if (k === "html") el.innerHTML = attrs[k];
+      else el.setAttribute(k, attrs[k]);
+    }
+    (kids || []).forEach(function (c) { if (c) el.appendChild(c); });
+    return el;
+  }
+
+  function gate(message) {
+    app.innerHTML = "";
+    var pin = h("input", { type: "text", inputmode: "numeric", autocomplete: "one-time-code", placeholder: "PIN", maxlength: "10" });
+    var err = h("div", { class: "err", text: message || "" });
+    var btn = h("button", { text: "Unlock" });
+    function submit() {
+      err.textContent = "";
+      fetch("/api/auth", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin: pin.value.trim() })
+      }).then(function (r) {
+        if (r.ok) { load(); } else { return r.text().then(function (t) { err.textContent = t || "Wrong PIN"; }); }
+      }).catch(function () { err.textContent = "Connection failed"; });
+    }
+    btn.onclick = submit;
+    pin.addEventListener("keydown", function (e) { if (e.key === "Enter") submit(); });
+    app.appendChild(h("div", { class: "gate" }, [
+      h("h1", { text: "Readaity Share" }),
+      h("p", { class: "sub", text: "Enter the PIN shown on the sharing computer." }),
+      pin, err, btn
+    ]));
+    pin.focus();
+  }
+
+  function shell() {
+    app.innerHTML = "";
+    var tabs = h("div", { class: "tabs" });
+    ["comics", "ebooks"].forEach(function (name) {
+      var t = h("button", { class: "tab" + (state.lib === name ? " active" : ""), text: name[0].toUpperCase() + name.slice(1) });
+      t.onclick = function () { state.lib = name; render(); };
+      tabs.appendChild(t);
+    });
+    var search = h("input", { id: "search", type: "search", placeholder: "Search titles…" });
+    search.value = state.q;
+    search.oninput = function () { state.q = search.value.toLowerCase(); paint(); };
+    app.appendChild(h("header", {}, [h("h1", { text: "Readaity Share" }), tabs, search]));
+    app.appendChild(h("main", { id: "main" }, [h("p", { class: "msg", text: "Loading…" })]));
+  }
+
+  var books = [];
+  function render() {
+    shell();
+    fetch("/api/books?library=" + state.lib).then(function (r) {
+      if (r.status === 401) { gate(); return null; }
+      return r.json();
+    }).then(function (list) {
+      if (!list) return;
+      books = list;
+      paint();
+    }).catch(function () {
+      document.getElementById("main").innerHTML = '<p class="msg">Could not load the library.</p>';
+    });
+  }
+
+  function paint() {
+    var main = document.getElementById("main");
+    if (!main) return;
+    var filtered = books.filter(function (b) { return b.title.toLowerCase().indexOf(state.q) !== -1; });
+    if (!filtered.length) { main.innerHTML = '<p class="msg">Nothing here.</p>'; return; }
+    var grid = h("div", { class: "grid" });
+    filtered.forEach(function (b) {
+      var cover = h("div", { class: "cover" });
+      if (b.has_cover) cover.style.backgroundImage = 'url("/api/cover/' + encodeURIComponent(b.id) + '")';
+      else cover.textContent = b.title;
+      grid.appendChild(h("div", { class: "book" }, [
+        cover,
+        h("div", { class: "meta" }, [
+          h("div", { class: "title", text: b.title }),
+          h("div", { class: "sub", text: b.format + (b.page_count ? " · " + b.page_count + "p" : "") }),
+          h("a", { class: "dl", href: "/api/download/" + encodeURIComponent(b.id), text: "Download" })
+        ])
+      ]));
+    });
+    main.innerHTML = "";
+    main.appendChild(grid);
+  }
+
+  function load() { render(); }
+  load();
+})();
+</script>
+</body>
+</html>

@@ -5,6 +5,7 @@ mod formats;
 mod library;
 mod mobi;
 mod rtf;
+mod share;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -124,6 +125,77 @@ fn set_setting(app: AppHandle, key: String, value: String) -> Result<(), String>
     let db = app.state::<AppDb>();
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     db::set_setting(&conn, &key, &value)
+}
+
+// ---------- Network sharing (b4) ----------
+
+#[tauri::command]
+fn share_get_config(app: AppHandle) -> share::ShareConfig {
+    share::load_config(&app)
+}
+
+#[tauri::command]
+fn share_set_config(
+    app: AppHandle,
+    port: u16,
+    name: String,
+    allowlist: String,
+    audit: bool,
+) -> Result<share::ShareConfig, String> {
+    share::save_config(&app, port, &name, &allowlist, audit)?;
+    Ok(share::load_config(&app))
+}
+
+#[tauri::command]
+fn share_set_pin(app: AppHandle, pin: String) -> Result<(), String> {
+    share::set_pin(&app, &pin)
+}
+
+#[tauri::command]
+fn share_generate_pin(app: AppHandle) -> Result<String, String> {
+    share::generate_pin(&app)
+}
+
+#[tauri::command]
+fn share_start(app: AppHandle) -> Result<share::ShareStatus, String> {
+    share::start(&app)
+}
+
+#[tauri::command]
+fn share_stop(app: AppHandle) -> Result<(), String> {
+    share::stop(&app)
+}
+
+#[tauri::command]
+fn share_status(app: AppHandle) -> share::ShareStatus {
+    share::status(&app)
+}
+
+#[tauri::command]
+fn share_regenerate_cert(app: AppHandle) -> Result<String, String> {
+    let was_running = share::status(&app).running;
+    if was_running {
+        share::stop(&app)?;
+    }
+    let fp = share::regenerate_cert(&app)?;
+    if was_running {
+        share::start(&app)?;
+    }
+    Ok(fp)
+}
+
+#[tauri::command]
+fn share_audit_log(app: AppHandle, limit: i64) -> Result<Vec<db::AuditRow>, String> {
+    let db = app.state::<AppDb>();
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    db::list_audit(&conn, limit.clamp(1, 2000))
+}
+
+#[tauri::command]
+fn share_clear_audit(app: AppHandle) -> Result<(), String> {
+    let db = app.state::<AppDb>();
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    db::clear_audit(&conn)
 }
 
 #[tauri::command]
@@ -567,8 +639,11 @@ pub fn run() {
             app.manage(AppDb(Mutex::new(conn)));
             app.manage(Sweeping(AtomicBool::new(false)));
             app.manage(Paused(AtomicBool::new(false)));
+            app.manage(share::ShareState::default());
             // Catch up on any books left pending from a previous session.
             start_sweep(app.handle().clone());
+            // Re-arm the LAN share server if the user had it on.
+            share::autostart(&app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -580,6 +655,16 @@ pub fn run() {
             list_folders,
             get_setting,
             set_setting,
+            share_get_config,
+            share_set_config,
+            share_set_pin,
+            share_generate_pin,
+            share_start,
+            share_stop,
+            share_status,
+            share_regenerate_cert,
+            share_audit_log,
+            share_clear_audit,
             library_counts,
             probe_folder,
             plan_move,

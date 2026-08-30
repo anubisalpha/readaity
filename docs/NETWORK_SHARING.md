@@ -1,6 +1,7 @@
 # Network sharing — design
 
-**Status:** design only, not built. Target: b4 (server) then b5 (discovery + import).
+**Status:** b4 (share server) **implemented** — see *b4 as built* at the end for
+what shipped vs. what was deferred. b5 (discovery + import) not started.
 
 Readaity gains the ability to serve its libraries over the local network so that:
 
@@ -302,3 +303,60 @@ New crates (b4): `axum`, `axum-server` (rustls), `tokio-rustls` / `rustls`,
 `rcgen`, `tower`, `tower-http` (`fs`, `set-header`), `tower_governor`,
 `argon2`, `hmac`, `sha2`, `time` or `cookie`. (b5): `mdns-sd` — plus a custom
 `rustls` `ServerCertVerifier` for fingerprint pinning, no new crate.
+
+---
+
+## b4 as built
+
+Module: `src-tauri/src/share/` (`mod`, `cert`, `tls`, `guard`, `auth`, `ids`,
+`routes`, `assets/`). Commands: `share_get_config`, `share_set_config`,
+`share_set_pin`, `share_generate_pin`, `share_start`, `share_stop`,
+`share_status`, `share_regenerate_cert`, `share_audit_log`, `share_clear_audit`.
+UI: `src/components/SharingSettings.tsx`, a "Network sharing" tab in Settings.
+
+Crates actually used: `aws-lc-rs` (feature `prebuilt-nasm` — the build box has no
+nasm/cmake), `rustls` + `axum-server` (`tls-rustls-no-provider`), `rcgen`,
+`axum` 0.8, `tower-http` (`set-header`), `tokio`/`tokio-util`, `rustls-pemfile`,
+`argon2`, `hmac`, `sha2`, `hex`, `rand`, `local-ip-address`.
+
+**Shipped as designed:** HTTPS-only, **TLS 1.3 only** with the three AEAD suites
+(strongest first) and no HSTS; self-signed cert via `rcgen` (CN `Readaity`, SANs
+for `localhost` / `readaity.local` / detected LAN IPs), persisted in `settings`,
+SHA-256 fingerprint on `/healthz` and in the UI, `share_regenerate_cert`.
+Argon2id PIN 6–10 digits, constant-time verify, `HttpOnly`/`Secure`/`SameSite`
+IP-bound signed cookie (12 h). Per-IP lockout (5 fails → 15 min), global
+`/api/auth` throttle, per-IP request rate limit. Private-range guard + optional
+allowlist. Opaque per-request HMAC book ids (recomputed each call — no id map to
+invalidate, no path in the API). Read-only, no CORS, `nosniff` / `no-referrer` /
+`no-store` / CSP-on-HTML. Audit log in a `share_audit` table (viewable/clearable
+from Settings). Endpoints `/`, `/healthz`, `/trust`, `/trust/help`, `/api/auth`,
+`/api/manifest`, `/api/books`, `/api/cover/{id}`, `/api/download/{id}`. Embedded
+single-file browse UI with its own PIN gate. Autostart on launch when the user
+left it enabled.
+
+**Verified** (2026-08-30): 9 Rust unit tests (`share::auth` / `guard` / `ids`)
+plus a 28-check live suite against the running server — TLS 1.3 negotiated,
+TLS 1.2 refused, no HSTS, security headers, PIN auth + IP-bound cookie,
+per-IP lockout after 5 fails, opaque ids, full books/manifest/download cycle,
+`/`, `/trust`, `/trust/help`.
+
+Two things learned while testing:
+- The signed cookie first used `.` as its field separator, which broke on
+  IPv4 client addresses (they contain dots) — now `|`.
+- **Windows 10's Schannel has no client-side TLS 1.3**, so the system `curl`
+  and PowerShell `Invoke-WebRequest` cannot reach the server on Win10. Real
+  browsers (Chrome/Firefox/Edge/Safari — own TLS stacks) are fine; this only
+  bites native Win10 HTTP clients, which is acceptable for the target use.
+
+**Deferred to a b4.x / b5:**
+- **QR codes** — the Sharing tab lists the `https://…` URLs as text and points at
+  `…/trust/help`; no QR image yet.
+- **Range / byte-serving** on `/api/download` — currently a plain streamed 200
+  (fine for "Save As"; resumable downloads need `Range`).
+- **Bandwidth ceilings and max-concurrent-connection/download caps** — only the
+  per-IP rate limit + auth throttle are in.
+- **Stop-on-network-change / resume-from-sleep.**
+- **Live "connected clients" panel** — the audit log covers recent activity
+  instead.
+- **Tray/title "Sharing on" indicator** — status shows in the Settings tab only.
+- **`tower_governor`** — replaced by a small in-house per-IP limiter in `guard`.

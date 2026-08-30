@@ -72,3 +72,30 @@ export interface ScanStatus {
   current: number;
   total: number;
 }
+
+/** Network-sharing configuration (mirrors `share::ShareConfig`). */
+export interface ShareConfig {
+  enabled: boolean;
+  port: number;
+  name: string;
+  pin_set: boolean;
+  allowlist: string;
+  audit: boolean;
+}
+
+/** Live state of the share server (mirrors `share::ShareStatus`). */
+export interface ShareStatus {
+  running: boolean;
+  port: number;
+  urls: string[];
+  fingerprint: string;
+  pin_set: boolean;
+}
+
+/** One recorded share-server event. */
+export interface AuditRow {
+  ts: number;
+  ip: string;
+  event: string;
+  detail: string | null;
+}

@@ -48,6 +48,11 @@ list are shared across both.
 - [x] Settings → **Show first** — pick whether Comics or Ebooks is the library
       Readaity opens on and the one that leads the sidebar switcher (persisted
       in the DB `settings` table)
+- [x] **Network sharing** (Settings → Network sharing) — serve your libraries to
+      other devices on the LAN over **HTTPS (TLS 1.3 only)**, behind a PIN. Any
+      browser can browse and download; a self-signed certificate with a
+      "Trust this device" flow. Read-only, private-range-only, per-IP lockout.
+      Design + build notes: [`docs/NETWORK_SHARING.md`](docs/NETWORK_SHARING.md)
 
 ### Roadmap
 
@@ -57,9 +62,9 @@ list are shared across both.
 - [ ] **Smart single-book import** — suggest a destination folder from the
       existing structure / the book's metadata, with "drop in Unsorted" fallback
 - [ ] Bookmarks, full-text search, reading themes; on-demand "verify library" (re-hash)
-- [ ] **Network sharing** — serve your libraries over the LAN (browser access +
-      book download, PIN-gated), and discover / import from other Readaity
-      instances on the network. Design: [`docs/NETWORK_SHARING.md`](docs/NETWORK_SHARING.md)
+- [ ] **Network sharing b5** — discover other Readaity instances on the LAN
+      (mDNS) and import books from them. Design: [`docs/NETWORK_SHARING.md`](docs/NETWORK_SHARING.md)
+- [ ] Favourites and a "Being Read" shelf; audiobooks as a third library
 
 ## The two-phase scan
 
@@ -89,9 +94,13 @@ src-tauri/src/
   rtf.rs       RTF → HTML
   db.rs        SQLite: folders + books, two-phase status lifecycle, cover
                BLOBs, reading progress, exclusions, duplicate groups,
-               key/value settings
+               key/value settings, share audit log
   library.rs   quick_scan (phase 1) + validate_one (phase 2) + move planning
   lib.rs       Tauri commands + background sweep emitting book-updated events
+  share/       LAN share server — mod (lifecycle), cert (rcgen self-signed),
+               tls (rustls TLS 1.3), guard (IP gating + lockout), auth
+               (Argon2 PIN + signed cookies), ids (opaque book tokens),
+               routes (axum), assets/ (embedded browse UI). See docs/.
 
 src/
   types.ts             Shared types mirroring the Rust surface

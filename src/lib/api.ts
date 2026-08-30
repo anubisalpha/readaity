@@ -4,6 +4,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  AuditRow,
   BookRow,
   DupGroup,
   FolderInfo,
@@ -14,6 +15,8 @@ import type {
   PageData,
   ProbeResult,
   ScanStatus,
+  ShareConfig,
+  ShareStatus,
 } from "../types";
 
 /** Open the native folder picker. Returns null if cancelled. */
@@ -76,6 +79,53 @@ export function getSetting(key: string): Promise<string | null> {
 /** Persist a preference. */
 export function setSetting(key: string, value: string): Promise<void> {
   return invoke("set_setting", { key, value });
+}
+
+// ---- Network sharing (b4) ----
+
+export function shareGetConfig(): Promise<ShareConfig> {
+  return invoke<ShareConfig>("share_get_config");
+}
+
+export function shareSetConfig(
+  port: number,
+  name: string,
+  allowlist: string,
+  audit: boolean,
+): Promise<ShareConfig> {
+  return invoke<ShareConfig>("share_set_config", { port, name, allowlist, audit });
+}
+
+export function shareSetPin(pin: string): Promise<void> {
+  return invoke("share_set_pin", { pin });
+}
+
+export function shareGeneratePin(): Promise<string> {
+  return invoke<string>("share_generate_pin");
+}
+
+export function shareStart(): Promise<ShareStatus> {
+  return invoke<ShareStatus>("share_start");
+}
+
+export function shareStop(): Promise<void> {
+  return invoke("share_stop");
+}
+
+export function shareStatus(): Promise<ShareStatus> {
+  return invoke<ShareStatus>("share_status");
+}
+
+export function shareRegenerateCert(): Promise<string> {
+  return invoke<string>("share_regenerate_cert");
+}
+
+export function shareAuditLog(limit: number): Promise<AuditRow[]> {
+  return invoke<AuditRow[]>("share_audit_log", { limit });
+}
+
+export function shareClearAudit(): Promise<void> {
+  return invoke("share_clear_audit");
 }
 
 export function listBooks(library: LibraryKind): Promise<BookRow[]> {

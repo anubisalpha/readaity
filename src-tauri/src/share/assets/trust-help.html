@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex" />
+<title>Trust this device — Readaity Share</title>
+<style>
+  body { background: #14161c; color: #e7e9ee; font: 15px/1.6 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 24px; }
+  main { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  p.lead { color: #9aa1b1; margin: 0 0 20px; }
+  a.get { display: inline-block; margin-bottom: 24px; padding: 9px 16px; background: #f0b429; color: #14161c; text-decoration: none; border-radius: 8px; font-weight: 700; }
+  section { border: 1px solid #2b2f3a; border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; background: #1c1f27; }
+  section h2 { font-size: 15px; margin: 0 0 6px; }
+  ol { margin: 0; padding-left: 20px; }
+  code { background: #0e1014; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Trust this device</h1>
+  <p class="lead">Install Readaity Share's certificate so your browser stops warning about this connection. One time per device. Check the fingerprint against the one shown in Readaity's Sharing settings first.</p>
+  <a class="get" href="/trust">Download the certificate</a>
+
+  <section>
+    <h2>iPhone / iPad</h2>
+    <ol>
+      <li>Open <code>/trust</code> in Safari and allow the profile download.</li>
+      <li>Settings &rarr; General &rarr; VPN &amp; Device Management &rarr; install the profile.</li>
+      <li>Settings &rarr; General &rarr; About &rarr; Certificate Trust Settings &rarr; turn it on.</li>
+    </ol>
+  </section>
+  <section>
+    <h2>Android</h2>
+    <ol>
+      <li>Download from <code>/trust</code>.</li>
+      <li>Settings &rarr; Security &rarr; Encryption &amp; credentials &rarr; Install a certificate &rarr; CA certificate.</li>
+      <li>Pick the downloaded <code>.pem</code> file.</li>
+    </ol>
+  </section>
+  <section>
+    <h2>Windows</h2>
+    <ol>
+      <li>Save the file from <code>/trust</code>, then double-click it.</li>
+      <li>Install Certificate &rarr; Local Machine &rarr; Place in <em>Trusted Root Certification Authorities</em>.</li>
+    </ol>
+  </section>
+  <section>
+    <h2>macOS</h2>
+    <ol>
+      <li>Open the downloaded file in Keychain Access, adding it to the <em>System</em> keychain.</li>
+      <li>Double-click it &rarr; Trust &rarr; set <em>When using this certificate</em> to <em>Always Trust</em>.</li>
+    </ol>
+  </section>
+  <section>
+    <h2>Firefox (any system)</h2>
+    <ol>
+      <li>Settings &rarr; Privacy &amp; Security &rarr; Certificates &rarr; View Certificates &rarr; Import.</li>
+      <li>Select the file and tick <em>Trust this CA to identify websites</em>.</li>
+    </ol>
+  </section>
+</main>
+</body>
+</html>

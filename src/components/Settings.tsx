@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { BookRow, DupGroup, LibraryKind } from "../types";
+import { SharingSettings } from "./SharingSettings";
 import {
   clearExclusions,
   ignoreDupe,
@@ -20,7 +21,7 @@ interface Props {
   onBooksChanged: (books: BookRow[]) => void;
 }
 
-type Tab = "general" | "removed" | "exact" | "similar";
+type Tab = "general" | "sharing" | "removed" | "exact" | "similar";
 
 function splitPath(p: string): { name: string; dir: string } {
   const parts = p.split(/[\\/]/).filter(Boolean);
@@ -118,6 +119,7 @@ export function Settings({
 
   const NAV: { id: Tab; label: string; count: number }[] = [
     { id: "general", label: "General", count: 0 },
+    { id: "sharing", label: "Network sharing", count: 0 },
     { id: "removed", label: "Removed from library", count: exclusions.length },
     { id: "exact", label: "Exact duplicates", count: exact.length },
     { id: "similar", label: "Possible duplicates", count: similar.length },
@@ -151,6 +153,7 @@ export function Settings({
           {tab === "general" && (
             <GeneralTab first={firstLibrary} onSet={onSetFirstLibrary} />
           )}
+          {tab === "sharing" && <SharingSettings />}
           {tab === "removed" && (
             <RemovedTab
               exclusions={exclusions}

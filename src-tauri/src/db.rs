@@ -75,6 +75,13 @@ pub fn open(db_path: &std::path::Path) -> Result<Connection, String> {
             key       TEXT PRIMARY KEY,
             value     TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS share_audit (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts        INTEGER NOT NULL,
+            ip        TEXT NOT NULL,
+            event     TEXT NOT NULL,
+            detail    TEXT
+        );
         CREATE TABLE IF NOT EXISTS books (
             path        TEXT PRIMARY KEY,
             folder      TEXT NOT NULL,
@@ -241,6 +248,56 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<(), Stri
         params![key, value],
     )
     .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ---------- Share audit log ----------
+
+/// One recorded event from the network-sharing server.
+#[derive(Serialize, Clone)]
+pub struct AuditRow {
+    pub ts: i64,
+    pub ip: String,
+    pub event: String,
+    pub detail: Option<String>,
+}
+
+pub fn add_audit(conn: &Connection, ip: &str, event: &str, detail: Option<&str>) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO share_audit(ts, ip, event, detail) VALUES (?1, ?2, ?3, ?4)",
+        params![now(), ip, event, detail],
+    )
+    .map_err(|e| e.to_string())?;
+    // Keep the log bounded.
+    conn.execute(
+        "DELETE FROM share_audit WHERE id NOT IN
+           (SELECT id FROM share_audit ORDER BY id DESC LIMIT 2000)",
+        [],
+    )
+    .ok();
+    Ok(())
+}
+
+pub fn list_audit(conn: &Connection, limit: i64) -> Result<Vec<AuditRow>, String> {
+    let mut stmt = conn
+        .prepare("SELECT ts, ip, event, detail FROM share_audit ORDER BY id DESC LIMIT ?1")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![limit], |r| {
+            Ok(AuditRow {
+                ts: r.get(0)?,
+                ip: r.get(1)?,
+                event: r.get(2)?,
+                detail: r.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+pub fn clear_audit(conn: &Connection) -> Result<(), String> {
+    conn.execute("DELETE FROM share_audit", [])
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -456,6 +513,43 @@ pub fn list_books(conn: &Connection, library: &str) -> Result<Vec<BookRow>, Stri
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![library], map_book)
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// A ready book with its real path + hash, for the network-share server only.
+#[derive(Clone)]
+pub struct ShareBook {
+    pub path: String,
+    pub title: String,
+    pub format: String,
+    pub size: i64,
+    pub page_count: i64,
+    pub md5: Option<String>,
+    pub has_cover: bool,
+}
+
+/// Ready books in one library (real paths — never sent to a client as-is).
+pub fn share_list(conn: &Connection, library: &str) -> Result<Vec<ShareBook>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT path, title, format, size, page_count, md5, cover IS NOT NULL
+             FROM books WHERE library = ?1 AND status = 'ready'
+             ORDER BY title COLLATE NOCASE",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![library], |r| {
+            Ok(ShareBook {
+                path: r.get(0)?,
+                title: r.get(1)?,
+                format: r.get(2)?,
+                size: r.get(3)?,
+                page_count: r.get(4)?,
+                md5: r.get(5)?,
+                has_cover: r.get(6)?,
+            })
+        })
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
