@@ -8,8 +8,9 @@ Readaity gains the ability to serve its libraries over the local network so that
 2. another Readaity instance can discover peers on the LAN, browse them, and
    import selected books into its own library.
 
-Everything stays on the LAN. Nothing is exposed to the internet, and no Readaity
-instance ever reads a file that isn't a catalogued book.
+Everything stays on the LAN, over TLS 1.3, behind a PIN. Nothing is exposed to
+the internet, and no Readaity instance ever reads a file that isn't a catalogued
+book.
 
 ---
 
@@ -17,25 +18,32 @@ instance ever reads a file that isn't a catalogued book.
 
 ### Runtime
 
-- An embedded HTTP server on the Rust side using **`axum`** (Tauri 2 already runs
-  a tokio runtime, so this adds little weight) plus `tower-http` for byte-range
-  file streaming.
+- An embedded **HTTPS** server on the Rust side using **`axum`** served over
+  **`axum-server`** with `rustls` (Tauri 2 already runs a tokio runtime, so this
+  adds little weight), plus `tower-http` for byte-range file streaming. Plain
+  HTTP is never served — see TLS below.
 - Lifecycle: a `ShareServer` handle in Tauri managed state. Commands
-  `share_start`, `share_stop`, `share_status`. The server is **off by default**
-  and never auto-starts.
+  `share_start`, `share_stop`, `share_status`, `share_regenerate_cert`. The
+  server is **off by default** and never auto-starts.
 - Config, persisted in the existing `settings` table:
   | key | default | meaning |
   |---|---|---|
   | `share_enabled` | `false` | start the server on launch |
-  | `share_port` | `8787` | listen port |
+  | `share_port` | `8787` | listen port (HTTPS) |
   | `share_name` | hostname | how this instance shows up to peers |
-  | `share_pin` | random 6-digit | access code (see Security) |
+  | `share_pin` | random 6-digit | access code, 6–10 digits (see Security) |
+  | `share_cert_pem` / `share_key_pem` | generated on first start | self-signed TLS material |
+  | `share_allowlist` | empty | optional comma-separated client IP/CIDR allowlist |
+  | `share_audit` | `true` | log connections + downloads |
 - Bind address is always `0.0.0.0` on the chosen port (LAN reachable). There is
   no loopback-only mode — the feature is pointless without LAN exposure, and the
-  PIN is the gate.
+  PIN + TLS are the gate.
 - Settings UI (new "Sharing" tab): the toggle, port field, display name, the
-  current PIN with a "regenerate" button, and — when running — the reachable
-  URLs (`http://<each-lan-ip>:<port>`) plus a small QR of the primary one.
+  PIN field (numeric, 6–10 digits, with a "generate random" button and a
+  show/hide), the **certificate fingerprint** (SHA-256, for peer verification)
+  with "regenerate", an optional client-IP allowlist box, and — when running —
+  the reachable URLs (`https://<each-lan-ip>:<port>`) plus a QR of the primary
+  one and a live connection/audit list.
 
 ### HTTP surface
 
@@ -45,8 +53,8 @@ requires auth (see Security).
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/` | Self-contained browse UI (single HTML file, `include_str!`-embedded, inline CSS/JS, no external assets) |
-| GET | `/healthz` | `{ "app": "readaity", "version": "x.y.z" }` — unauthenticated, used for discovery probing |
-| POST | `/api/auth` | Body `{ pin }` → sets an auth cookie on success, 401 on failure (rate-limited) |
+| GET | `/healthz` | `{ "app": "readaity", "version": "x.y.z", "fingerprint": "<sha256>" }` — unauthenticated, used for discovery probing and cert pinning |
+| POST | `/api/auth` | Body `{ pin }` → sets an auth cookie on success, 401 on failure (rate-limited + lockout) |
 | GET | `/api/manifest` | `{ name, version, libraries: { comics, ebooks }, generated_at }` — cheap summary for peers |
 | GET | `/api/books?library=comics\|ebooks` | Array of `{ id, title, format, size, page_count, md5, has_cover }`. `id` is an opaque token (see below), **never a filesystem path** |
 | GET | `/api/cover/:id` | `image/jpeg` bytes from the `cover` BLOB, or 404 |
@@ -67,21 +75,104 @@ The browse UI and peers must never see or send real paths.
 
 ### Security
 
-- **PIN gate.** First request without a valid `readaity_share` cookie → the
-  browse UI shows a PIN prompt; peers call `/api/auth` first. The cookie is
-  `HttpOnly`, `SameSite=Strict`, signed with the session key, ~12 h expiry.
-- **Brute-force protection.** `/api/auth` failures are counted per client IP;
-  after 5 failures in 5 minutes that IP is locked out for 15 minutes. PIN is
-  6 digits, so this keeps online guessing infeasible.
+#### TLS (self-signed)
+
+- On first `share_start` with no stored cert, generate a self-signed certificate
+  with **`rcgen`**: EC P-256 key, CN `readaity`, SANs for `readaity.local`, the
+  detected LAN IPs and `localhost`, ~2-year validity. Store cert + key PEM in the
+  `settings` table (`share_cert_pem` / `share_key_pem`); reuse on later starts.
+- The server **only** speaks HTTPS (`axum-server` + `rustls`). No HTTP listener,
+  no HTTP→HTTPS redirect port.
+- **TLS 1.3 only.** `ServerConfig` is built with
+  `.with_protocol_versions(&[&rustls::version::TLS13])` — TLS 1.2 and below are
+  refused. Cipher suites are restricted to the AEAD trio, in this preference
+  order: `TLS13_AES_256_GCM_SHA384`, `TLS13_CHACHA20_POLY1305_SHA256`,
+  `TLS13_AES_128_GCM_SHA256`. Key exchange is limited to `X25519` (with
+  `secp384r1` as a fallback). No renegotiation, no compression, no session
+  tickets across restarts (the session key rotates anyway).
+- The client half (b5) builds its `rustls::ClientConfig` with the same
+  TLS-1.3-only restriction, so a downgraded peer is rejected before the
+  fingerprint check.
+- Browsers will show a "not trusted" warning (expected for self-signed) — the
+  Settings tab explains this and shows the SHA-256 fingerprint so the user can
+  confirm it matches.
+- **Readaity-to-Readaity trust is fingerprint pinning, not the CA chain.** The
+  discovering peer reads the fingerprint from `/healthz` (or mDNS TXT), shows it
+  to the user on first connect ("Trust <name> — fingerprint AB:CD:…?"), and pins
+  it. A later fingerprint change forces re-confirmation (detects MITM / a
+  regenerated cert).
+- `share_regenerate_cert` throws the old cert away and makes a new one (used if a
+  key is thought compromised); all peers must re-trust.
+
+#### PIN
+
+- 6–10 digits, chosen by the user or generated (default: random 6). Stored as an
+  **Argon2id hash** in `settings`, never in plaintext; the raw PIN is only held
+  in memory long enough to display once after generation.
+- `/api/auth` compares with a constant-time check against the hash.
+- First request without a valid `readaity_share` cookie → the browse UI shows a
+  PIN prompt; peers call `/api/auth` first. The cookie is `HttpOnly`, `Secure`,
+  `SameSite=Strict`, bound to the client IP, signed with the session key,
+  ~12 h expiry.
+
+#### Brute-force / abuse
+
+- **Lockout:** `/api/auth` failures counted per client IP — **5 failures → that
+  IP locked out 15 minutes** (window resets on success). Lockouts surface in the
+  Settings connection list.
+- **Global auth throttle:** at most N `/api/auth` attempts/second across all IPs,
+  so a botnet-style spread can't parallelise around the per-IP lockout.
+- **Rate limiting on every route** (not just auth) via `tower_governor` — a
+  sane per-IP request/second cap with burst.
+- **Connection caps:** max concurrent connections and max concurrent downloads;
+  a per-download and aggregate bandwidth ceiling is configurable.
+
+#### Network boundary
+
+- **Private-range only:** refuse (403) any request whose client IP is not in
+  `10/8`, `172.16/12`, `192.168/16`, `169.254/16` or loopback. Blocks accidental
+  exposure if the machine is on a public IP or the port is forwarded.
+- **Optional allowlist:** if `share_allowlist` is set, only those IPs/CIDRs may
+  connect at all (checked before auth).
+- **mDNS hygiene:** the TXT record carries only `v=` and `pin=required` — no
+  library names, counts, or user identity.
+- Advertising stops the instant the server stops.
+
+#### Data boundary
+
 - **Read-only.** No route writes anything. A peer importing books pulls from
-  *this* server; this server never pushes.
-- **Catalogue-bounded.** Only `ready` books that are currently in `books` are
-  reachable, and only via their opaque id. Covers likewise.
-- **No internet.** We advertise and bind on the LAN only and document that users
-  should not port-forward it. (Optional later: refuse to serve if the client IP
-  isn't in a private range.)
-- **Visible when on.** The tray/title reflects "Sharing on" so it can't run
-  forgotten.
+  *this* server; this server never pushes and never deletes.
+- **Catalogue-bounded.** Only `ready` books currently in `books` are reachable,
+  and only via their opaque HMAC id (see above) — there is no path, filename or
+  glob input anywhere in the API. Covers likewise.
+- **No CORS.** `Access-Control-Allow-Origin` is never sent; the browse UI is
+  same-origin. Peers are not browsers and don't need it.
+- Security headers on every response: `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer`, a restrictive `Content-Security-Policy` for the
+  browse UI, `Cache-Control: no-store` on API responses.
+
+#### Operational
+
+- **Visible when on.** Tray/title reflects "Sharing on"; the Settings tab shows a
+  live list of connected clients and recent downloads.
+- **Audit log** (`share_audit`, on by default): append-only log of
+  connect / auth-fail / lockout / download events (time, IP, book title) kept in
+  a `share_audit` table, viewable and clearable from Settings.
+- **Stops on network change / sleep:** if the active network interface or its
+  subnet changes, or the machine resumes from sleep, the server stops and must be
+  re-armed (prevents "followed me onto a coffee-shop wifi" exposure).
+- **Session ends cleanly:** `share_stop` drops all cookies (rotates the session
+  key), closes listeners, and withdraws the mDNS advert.
+
+#### Still open / later
+
+- Trust-on-first-use is as good as the user checking the fingerprint once; a
+  future option could let two instances pair via a short code that also exchanges
+  pinned fingerprints, removing the manual step.
+- No at-rest encryption of the cert/PIN-hash beyond the OS user profile — the
+  `settings` DB is already only readable by the user account.
+- Per-book / per-folder share scoping (share only some libraries or folders) is
+  not in b4; the whole catalogue of a library is shared or nothing.
 
 ### Browse UI (`/`)
 
@@ -108,9 +199,15 @@ a plain list if JS is disabled. No build step — it's hand-written and embedded
 - New **"Network"** entry in the sidebar, below the library switcher.
 - Browsing `_readaity._tcp` lists discovered peers: name, host, `GET /healthz`
   reachability, and (after auth) library counts from `/api/manifest`.
-- Selecting a peer prompts for its PIN once (stored for the session only, in
-  memory), then shows its shelf using the same `/api/books` + `/api/cover/:id`
-  the browser UI uses.
+- On first connect to a peer, show its TLS fingerprint (from `/healthz`) and ask
+  the user to trust it; the pin is stored per peer in `settings`
+  (`peer_trust_<host>`). A changed fingerprint later blocks the connection until
+  re-confirmed.
+- Then prompts for its PIN once (kept for the session only, in memory), and shows
+  its shelf using the same `/api/books` + `/api/cover/:id` the browser UI uses.
+- The peer's self-signed cert is verified against the pinned fingerprint only
+  (custom `rustls` `ServerCertVerifier`) — the system trust store is not
+  consulted.
 
 ### Importing
 
@@ -132,7 +229,7 @@ a plain list if JS is disabled. No build step — it's hand-written and embedded
 
 ### Not in scope (yet)
 
-- Auth beyond a shared PIN (per-user accounts, TLS).
+- Auth beyond a shared PIN (per-user accounts, proper CA-issued certs).
 - Syncing reading progress between instances.
 - Writing to a peer / remote deletion.
 - WAN / relay / anything off the local segment.
@@ -143,8 +240,10 @@ a plain list if JS is disabled. No build step — it's hand-written and embedded
 
 | Phase | Ship | Contents |
 |---|---|---|
-| b4 | Share server | `axum` server, `settings` config, opaque-id map, PIN auth + lockout, `/api/*`, embedded browse UI, Settings "Sharing" tab |
-| b5 | Discovery + import | `mdns-sd` advertise + browse, "Network" sidebar view, peer PIN prompt, multi-select import with md5 dedupe and `rescan` |
+| b4 | Share server | HTTPS `axum` server (self-signed cert via `rcgen`, `rustls`, **TLS 1.3 only**, AEAD suites), `settings` config, opaque-id map, Argon2 PIN (6–10 digits) with per-IP lockout + global throttle + route rate-limiting, private-range guard + optional allowlist, connection/bandwidth caps, audit log, security headers, embedded browse UI, Settings "Sharing" tab (PIN, fingerprint, allowlist, live connections) |
+| b5 | Discovery + import | `mdns-sd` advertise + browse, "Network" sidebar view, TLS fingerprint trust-on-first-use + pinning, peer PIN prompt, multi-select import with md5 dedupe and `rescan` |
 
-New crates: `axum`, `tower`, `tower-http` (features: `fs`, `set-header`),
-`mdns-sd`, `hmac`, `sha2` (b4); no new crates for b5 beyond `mdns-sd`.
+New crates (b4): `axum`, `axum-server` (rustls), `tokio-rustls` / `rustls`,
+`rcgen`, `tower`, `tower-http` (`fs`, `set-header`), `tower_governor`,
+`argon2`, `hmac`, `sha2`, `time` or `cookie`. (b5): `mdns-sd` — plus a custom
+`rustls` `ServerCertVerifier` for fingerprint pinning, no new crate.
