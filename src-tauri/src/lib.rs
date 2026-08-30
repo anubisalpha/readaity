@@ -556,6 +556,45 @@ fn set_progress(app: AppHandle, path: String, page: i64) -> Result<(), String> {
     db::set_progress(&conn, &path, page)
 }
 
+/// Toggle a book's favourite flag; returns the library's refreshed list.
+#[tauri::command]
+fn set_favorite(
+    app: AppHandle,
+    path: String,
+    favorite: bool,
+    library: String,
+) -> Result<Vec<BookRow>, String> {
+    {
+        let db = app.state::<AppDb>();
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        db::set_favorite(&conn, &path, favorite)?;
+    }
+    list_books(app, library)
+}
+
+/// Stamp a book as opened now (adds it to the Being Read shelf). Fire-and-forget.
+#[tauri::command]
+fn mark_opened(app: AppHandle, path: String) -> Result<(), String> {
+    let db = app.state::<AppDb>();
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    db::mark_opened(&conn, &path)
+}
+
+/// Remove a book from the Being Read shelf; returns the library's refreshed list.
+#[tauri::command]
+fn clear_being_read(
+    app: AppHandle,
+    path: String,
+    library: String,
+) -> Result<Vec<BookRow>, String> {
+    {
+        let db = app.state::<AppDb>();
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        db::clear_opened(&conn, &path)?;
+    }
+    list_books(app, library)
+}
+
 /// Start the background Phase-2 sweep if one isn't already running.
 /// Each validated book emits a `book-updated` event so the shelf fills in live.
 fn start_sweep(app: AppHandle) {
@@ -710,6 +749,9 @@ pub fn run() {
             get_text_content,
             get_page,
             set_progress,
+            set_favorite,
+            mark_opened,
+            clear_being_read,
             pause_indexing,
             resume_indexing
         ])

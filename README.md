@@ -55,6 +55,11 @@ list are shared across both.
       browser can browse and download; a self-signed certificate with a
       "Trust this device" flow. Read-only, private-range-only, per-IP lockout.
       Design + build notes: [`docs/NETWORK_SHARING.md`](docs/NETWORK_SHARING.md)
+- [x] **Favourites** and **Being Read** shelves in the sidebar — one of each per
+      library (star a book to favourite it; opening a book adds it to Being Read,
+      most-recent first). `favorite` / `last_opened` columns on `books`.
+- [x] App-wide top bar: the Readaity wordmark (aity-style teal underline) on the
+      left, Settings on the right.
 
 ### Roadmap
 
@@ -64,9 +69,10 @@ list are shared across both.
 - [ ] **Smart single-book import** — suggest a destination folder from the
       existing structure / the book's metadata, with "drop in Unsorted" fallback
 - [ ] Bookmarks, full-text search, reading themes; on-demand "verify library" (re-hash)
-- [ ] **Network sharing (b6)** — discover other Readaity instances on the LAN
+- [ ] **Network sharing** — discover other Readaity instances on the LAN
       (mDNS) and import books from them. Design: [`docs/NETWORK_SHARING.md`](docs/NETWORK_SHARING.md)
-- [ ] Favourites and a "Being Read" shelf; audiobooks as a third library
+- [ ] **Audiobooks** as a third library type (favourites / being-read already
+      cover it once the `library` value exists)
 
 ## The two-phase scan
 
@@ -116,7 +122,8 @@ src/
   lib/api.ts           Typed invoke() wrappers + event listeners
   lib/formats.ts       Format lists (mirrors formats.rs)
   components/
-    Library.tsx        Shelf grid, folder chips, library toggle, scan status
+    AppHeader.tsx      Top bar — Readaity wordmark + Settings
+    Library.tsx        Folder view + Favourites / Being Read shelves, scan status
     Cover.tsx          Lazy cover load from the DB thumbnail cache
     Reader.tsx         Comic paged image view
     EbookReader.tsx    Routes an ebook to the right renderer by format

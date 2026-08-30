@@ -45,6 +45,11 @@ pub struct BookRow {
     pub error: Option<String>,
     pub last_page: i64,
     pub has_cover: bool,
+    /// User-flagged favourite (per-library "Favourites" shelf).
+    pub favorite: bool,
+    /// Unix seconds this book was last opened, or `None` if never opened or
+    /// dismissed from the per-library "Being Read" shelf.
+    pub last_opened: Option<i64>,
 }
 
 /// Open (or create) the DB and ensure the schema exists.
@@ -124,6 +129,8 @@ pub fn open(db_path: &std::path::Path) -> Result<Connection, String> {
             error       TEXT,
             last_page   INTEGER NOT NULL DEFAULT 0,
             library     TEXT NOT NULL DEFAULT 'comics',
+            favorite    INTEGER NOT NULL DEFAULT 0,
+            last_opened INTEGER,
             updated_at  INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_books_folder ON books(folder);
@@ -178,6 +185,25 @@ pub fn open(db_path: &std::path::Path) -> Result<Connection, String> {
         [],
     )
     .ok();
+
+    // Migration: add books.favorite / books.last_opened (pre-shelves DBs).
+    for (col, decl) in [
+        ("favorite", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_opened", "INTEGER"),
+    ] {
+        let has: bool = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM pragma_table_info('books') WHERE name = '{col}'"),
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false);
+        if !has {
+            conn.execute(&format!("ALTER TABLE books ADD COLUMN {col} {decl}"), [])
+                .ok();
+        }
+    }
 
     Ok(conn)
 }
@@ -605,11 +631,13 @@ fn map_book(r: &rusqlite::Row) -> rusqlite::Result<BookRow> {
         error: r.get(8)?,
         last_page: r.get(9)?,
         has_cover: r.get(10)?,
+        favorite: r.get::<_, i64>(11)? != 0,
+        last_opened: r.get(12)?,
     })
 }
 
 const BOOK_COLS: &str = "path, folder, format, title, size, mtime, page_count, status, error, \
-                         last_page, cover IS NOT NULL";
+                         last_page, cover IS NOT NULL, favorite, last_opened";
 
 /// Books in one library (for the shelf).
 pub fn list_books(conn: &Connection, library: &str) -> Result<Vec<BookRow>, String> {
@@ -706,33 +734,20 @@ pub struct DupGroup {
 /// Groups of byte-identical books (same MD5, more than one copy).
 pub fn list_duplicates(conn: &Connection) -> Result<Vec<DupGroup>, String> {
     let mut stmt = conn
-        .prepare(
-            "SELECT path, folder, format, title, size, mtime, page_count, status, error,
-                    last_page, cover IS NOT NULL, md5
+        .prepare(&format!(
+            "SELECT {BOOK_COLS}, md5
              FROM books
              WHERE md5 IS NOT NULL
                AND md5 IN (SELECT md5 FROM books WHERE md5 IS NOT NULL
                            GROUP BY md5 HAVING COUNT(*) > 1)
-             ORDER BY md5, title COLLATE NOCASE",
-        )
+             ORDER BY md5, title COLLATE NOCASE"
+        ))
         .map_err(|e| e.to_string())?;
 
     let rows = stmt
         .query_map([], |r| {
-            let book = BookRow {
-                path: r.get(0)?,
-                folder: r.get(1)?,
-                format: r.get(2)?,
-                title: r.get(3)?,
-                size: r.get(4)?,
-                mtime: r.get(5)?,
-                page_count: r.get(6)?,
-                status: r.get(7)?,
-                error: r.get(8)?,
-                last_page: r.get(9)?,
-                has_cover: r.get(10)?,
-            };
-            let md5: String = r.get(11)?;
+            let book = map_book(r)?;
+            let md5: String = r.get(13)?;
             Ok((md5, book))
         })
         .map_err(|e| e.to_string())?;
@@ -909,6 +924,39 @@ pub fn set_progress(conn: &Connection, path: &str, page: i64) -> Result<(), Stri
     Ok(())
 }
 
+// ---------- Favourites / Being Read shelves ----------
+
+/// Flag or unflag a book as a favourite.
+pub fn set_favorite(conn: &Connection, path: &str, favorite: bool) -> Result<(), String> {
+    conn.execute(
+        "UPDATE books SET favorite = ?2 WHERE path = ?1",
+        params![path, favorite as i64],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Stamp a book as opened now — puts it at the top of its library's Being Read
+/// shelf. Called whenever a reader is opened for the book.
+pub fn mark_opened(conn: &Connection, path: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE books SET last_opened = ?2 WHERE path = ?1",
+        params![path, now()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Remove a book from the Being Read shelf (does not touch reading progress).
+pub fn clear_opened(conn: &Connection, path: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE books SET last_opened = NULL WHERE path = ?1",
+        params![path],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod recovery_tests {
     use super::*;
@@ -1005,6 +1053,95 @@ mod recovery_tests {
         add_folder(&conn, "A:/x", "tree", "comics").unwrap();
         checkpoint(&conn); // must not panic
         assert_eq!(list_folders(&conn, "comics").unwrap().len(), 1);
+        drop(conn);
+        let _ = std::fs::remove_file(&p);
+    }
+}
+
+#[cfg(test)]
+mod shelf_tests {
+    use super::*;
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("readaity-shelftest-{}-{}.db", std::process::id(), name));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    fn seed_book(conn: &Connection, path: &str, library: &str) {
+        let now = now();
+        conn.execute(
+            "INSERT INTO books(path,folder,format,title,size,mtime,page_count,status,last_page,library,updated_at)
+             VALUES(?1,'f','txt',?1,1,?2,0,'ready',0,?3,?2)",
+            params![path, now, library],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn favorite_toggle_and_open_stamp_round_trip() {
+        let p = tmp("fav");
+        let conn = open(&p).unwrap();
+        seed_book(&conn, "a.txt", "ebooks");
+        seed_book(&conn, "b.txt", "ebooks");
+        seed_book(&conn, "c.cbz", "comics");
+
+        set_favorite(&conn, "a.txt", true).unwrap();
+        mark_opened(&conn, "b.txt").unwrap();
+
+        let ebooks = list_books(&conn, "ebooks").unwrap();
+        let a = ebooks.iter().find(|x| x.path == "a.txt").unwrap();
+        let b = ebooks.iter().find(|x| x.path == "b.txt").unwrap();
+        assert!(a.favorite && a.last_opened.is_none());
+        assert!(!b.favorite && b.last_opened.is_some());
+
+        // comics library is unaffected by the ebook shelf actions
+        let comics = list_books(&conn, "comics").unwrap();
+        assert!(!comics[0].favorite && comics[0].last_opened.is_none());
+
+        // un-favourite and clear being-read
+        set_favorite(&conn, "a.txt", false).unwrap();
+        clear_opened(&conn, "b.txt").unwrap();
+        let ebooks = list_books(&conn, "ebooks").unwrap();
+        assert!(ebooks.iter().all(|x| !x.favorite && x.last_opened.is_none()));
+
+        drop(conn);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn migration_adds_shelf_columns_to_old_books_table() {
+        let p = tmp("migrate");
+        {
+            let conn = Connection::open(&p).unwrap();
+            // The pre-shelves books schema (b4 and earlier): has cover/md5 but
+            // no favorite/last_opened.
+            conn.execute_batch(
+                "CREATE TABLE books(
+                    path TEXT PRIMARY KEY, folder TEXT NOT NULL, format TEXT NOT NULL,
+                    title TEXT NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL,
+                    md5 TEXT, page_count INTEGER NOT NULL DEFAULT 0,
+                    cover BLOB, cover_w INTEGER, cover_h INTEGER,
+                    status TEXT NOT NULL DEFAULT 'discovered',
+                    error TEXT, last_page INTEGER NOT NULL DEFAULT 0,
+                    library TEXT NOT NULL DEFAULT 'comics', updated_at INTEGER NOT NULL);
+                 CREATE TABLE folders(path TEXT PRIMARY KEY, added_at INTEGER NOT NULL,
+                    mode TEXT NOT NULL DEFAULT 'tree', library TEXT NOT NULL DEFAULT 'comics');",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO books(path,folder,format,title,size,mtime,updated_at)
+                 VALUES('old.txt','f','txt','Old',1,1,1)",
+                [],
+            )
+            .unwrap();
+        }
+        // open() must migrate without dropping the row
+        let conn = open(&p).unwrap();
+        let books = list_books(&conn, "comics").unwrap();
+        assert_eq!(books.len(), 1);
+        assert!(!books[0].favorite && books[0].last_opened.is_none());
         drop(conn);
         let _ = std::fs::remove_file(&p);
     }

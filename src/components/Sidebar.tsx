@@ -2,10 +2,16 @@ import { useState } from "react";
 import type { LibraryKind } from "../types";
 import type { TreeNode } from "../lib/tree";
 
+type Shelf = "library" | "favorites" | "beingRead";
+
 interface Props {
   library: LibraryKind;
   firstLibrary: LibraryKind;
   onSwitchLibrary: (lib: LibraryKind) => void;
+  shelf: Shelf;
+  onShelf: (s: Shelf) => void;
+  favoritesCount: number;
+  beingReadCount: number;
   tree: TreeNode[];
   cwd: string | null;
   expanded: Set<string>;
@@ -19,6 +25,10 @@ export function Sidebar({
   library,
   firstLibrary,
   onSwitchLibrary,
+  shelf,
+  onShelf,
+  favoritesCount,
+  beingReadCount,
   tree,
   cwd,
   expanded,
@@ -44,7 +54,30 @@ export function Sidebar({
       </div>
 
       <button
-        className={`tree-row root-row${cwd === null ? " active" : ""}`}
+        className={`tree-row shelf-row${
+          shelf === "favorites" ? " active" : ""
+        }`}
+        onClick={() => onShelf("favorites")}
+      >
+        <span className="tree-chevron placeholder" />
+        <span className="tree-label">★ Favourites</span>
+        <span className="tree-count">{favoritesCount}</span>
+      </button>
+      <button
+        className={`tree-row shelf-row${
+          shelf === "beingRead" ? " active" : ""
+        }`}
+        onClick={() => onShelf("beingRead")}
+      >
+        <span className="tree-chevron placeholder" />
+        <span className="tree-label">Being Read</span>
+        <span className="tree-count">{beingReadCount}</span>
+      </button>
+
+      <button
+        className={`tree-row root-row${
+          shelf === "library" && cwd === null ? " active" : ""
+        }`}
         onClick={() => onNavigate(null)}
       >
         <span className="tree-chevron placeholder" />
@@ -55,7 +88,7 @@ export function Sidebar({
           key={node.path}
           node={node}
           depth={0}
-          cwd={cwd}
+          cwd={shelf === "library" ? cwd : null}
           expanded={expanded}
           onNavigate={onNavigate}
           onToggle={onToggle}

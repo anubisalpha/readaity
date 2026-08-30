@@ -234,6 +234,30 @@ export function setProgress(path: string, page: number): Promise<void> {
   return invoke("set_progress", { path, page });
 }
 
+// ---- Favourites / Being Read ----
+
+/** Toggle a book's favourite flag; returns the library's refreshed list. */
+export function setFavorite(
+  path: string,
+  favorite: boolean,
+  library: LibraryKind,
+): Promise<BookRow[]> {
+  return invoke<BookRow[]>("set_favorite", { path, favorite, library });
+}
+
+/** Mark a book as opened now (adds it to Being Read). Fire-and-forget. */
+export function markOpened(path: string): Promise<void> {
+  return invoke("mark_opened", { path });
+}
+
+/** Remove a book from the Being Read shelf; returns the refreshed list. */
+export function clearBeingRead(
+  path: string,
+  library: LibraryKind,
+): Promise<BookRow[]> {
+  return invoke<BookRow[]>("clear_being_read", { path, library });
+}
+
 export function pauseIndexing(): Promise<void> {
   return invoke("pause_indexing");
 }

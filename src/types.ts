@@ -58,6 +58,9 @@ export interface BookRow {
   error: string | null;
   last_page: number;
   has_cover: boolean;
+  favorite: boolean;
+  /** Unix seconds last opened, or null if never / removed from Being Read. */
+  last_opened: number | null;
 }
 
 /** One rendered page (from `get_page`). */

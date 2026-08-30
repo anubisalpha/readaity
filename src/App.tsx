@@ -20,15 +20,19 @@ import {
   pauseIndexing,
   pickFolder,
   probeFolder,
+  clearBeingRead,
+  markOpened,
   reindex,
   removeBook,
   removeFolder,
   removePath,
   rescan,
   resumeIndexing,
+  setFavorite,
   setProgress,
   setSetting,
 } from "./lib/api";
+import { AppHeader } from "./components/AppHeader";
 import { Library } from "./components/Library";
 import { Reader } from "./components/Reader";
 import { EbookReader } from "./components/EbookReader";
@@ -198,6 +202,45 @@ function App() {
     resumeIndexing().catch((e) => console.error("resume failed", e));
   }, []);
 
+  const handleToggleFavorite = useCallback(
+    async (path: string) => {
+      const book = books.find((b) => b.path === path);
+      const next = !(book?.favorite ?? false);
+      setBooks((prev) =>
+        prev.map((b) => (b.path === path ? { ...b, favorite: next } : b)),
+      );
+      try {
+        setBooks(sortBooks(await setFavorite(path, next, library)));
+      } catch (e) {
+        console.error("favourite failed", e);
+      }
+    },
+    [books, library],
+  );
+
+  const handleClearBeingRead = useCallback(
+    async (path: string) => {
+      setBooks((prev) =>
+        prev.map((b) => (b.path === path ? { ...b, last_opened: null } : b)),
+      );
+      try {
+        setBooks(sortBooks(await clearBeingRead(path, library)));
+      } catch (e) {
+        console.error("remove from being-read failed", e);
+      }
+    },
+    [library],
+  );
+
+  const handleOpenBook = useCallback((book: BookRow) => {
+    setOpenBook(book);
+    const stamp = Math.floor(Date.now() / 1000);
+    setBooks((prev) =>
+      prev.map((b) => (b.path === book.path ? { ...b, last_opened: stamp } : b)),
+    );
+    markOpened(book.path).catch((e) => console.error("mark opened failed", e));
+  }, []);
+
   const handlePageChange = useCallback(
     (page: number) => {
       if (!openBook) return;
@@ -221,42 +264,52 @@ function App() {
 
   return (
     <>
-      {recovered && (
-        <div className="recovery-banner" role="status">
-          <span>
-            Your library file was damaged and has been rebuilt. Your folders are
-            back and the books are being re-scanned now — covers and reading
-            positions will repopulate. The old file was kept alongside it.
-          </span>
-          <button className="btn small" onClick={() => setRecovered(false)}>
-            Dismiss
-          </button>
-        </div>
-      )}
+      <div className="app-shell">
+        {recovered && (
+          <div className="recovery-banner" role="status">
+            <span>
+              Your library file was damaged and has been rebuilt. Your folders
+              are back and the books are being re-scanned now — covers and
+              reading positions will repopulate. The old file was kept alongside
+              it.
+            </span>
+            <button className="btn small" onClick={() => setRecovered(false)}>
+              Dismiss
+            </button>
+          </div>
+        )}
 
-      {/* Library stays mounted so scroll, folder location and selection persist
-          when you open a book or Settings and come back. */}
-      <Library
-        books={books}
-        folders={folders}
-        status={status}
-        library={library}
-        firstLibrary={firstLibrary}
-        comicsCount={counts.comics}
-        ebooksCount={counts.ebooks}
-        onSwitchLibrary={setLibrary}
-        onOpenSettings={() => setSettingsOpen(true)}
-        onRescan={handleRescan}
-        onReindex={handleReindex}
-        onAddFolder={handleAddFolder}
-        onRemoveFolder={handleRemoveFolder}
-        onRemoveBook={handleRemoveBook}
-        onRemovePath={handleRemovePath}
-        onPause={handlePause}
-        onResume={handleResume}
-        onBooksChanged={(bs) => setBooks(sortBooks(bs))}
-        onOpenBook={setOpenBook}
-      />
+        <AppHeader
+          status={status}
+          comicsCount={counts.comics}
+          ebooksCount={counts.ebooks}
+          onPause={handlePause}
+          onResume={handleResume}
+          onAddFolder={handleAddFolder}
+          onRescan={handleRescan}
+          onReindex={handleReindex}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
+
+        {/* Library stays mounted so scroll, folder location and selection
+            persist when you open a book or Settings and come back. */}
+        <Library
+          books={books}
+          folders={folders}
+          status={status}
+          library={library}
+          firstLibrary={firstLibrary}
+          onSwitchLibrary={setLibrary}
+          onAddFolder={handleAddFolder}
+          onRemoveFolder={handleRemoveFolder}
+          onRemoveBook={handleRemoveBook}
+          onRemovePath={handleRemovePath}
+          onBooksChanged={(bs) => setBooks(sortBooks(bs))}
+          onOpenBook={handleOpenBook}
+          onToggleFavorite={handleToggleFavorite}
+          onClearBeingRead={handleClearBeingRead}
+        />
+      </div>
 
       {pendingAdd && (
         <AddFolderDialog

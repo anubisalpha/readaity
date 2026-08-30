@@ -79,8 +79,130 @@ body {
 }
 
 /* ---------- Library ---------- */
-.library {
+.app-shell {
   height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.app-header {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.app-logo {
+  flex: none;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: var(--text);
+}
+.app-logo .brand-a {
+  color: #2fd3b8;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.app-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12.5px;
+}
+.app-status .status-label {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.app-header.idle .status-label {
+  color: var(--text-dim);
+}
+.app-status .status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: #57c98a;
+}
+.app-header.scanning .status-dot,
+.app-header.indexing .status-dot {
+  background: var(--accent);
+  animation: pulse 1s ease-in-out infinite;
+}
+.app-header.paused .status-dot {
+  background: #d9b25f;
+}
+.app-status .status-btn {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  color: var(--text);
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.app-status .status-btn:hover {
+  border-color: var(--accent);
+}
+
+.app-header-actions {
+  margin-left: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-header-progress {
+  position: absolute;
+  left: 0;
+  bottom: -1px;
+  height: 2px;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+.app-header.scanning .app-header-progress {
+  background: #ffca80;
+}
+.app-header.paused .app-header-progress {
+  background: #d9b25f;
+}
+.app-header-progress.indeterminate {
+  width: 30%;
+  animation: header-indeterminate 1.1s ease-in-out infinite;
+}
+@keyframes header-indeterminate {
+  0% {
+    margin-left: -30%;
+  }
+  100% {
+    margin-left: 100%;
+  }
+}
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.library {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -201,18 +323,6 @@ body {
   font-variant-numeric: tabular-nums;
   padding-left: 6px;
 }
-.library-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 18px;
-}
-.library-header h1 {
-  font-size: 22px;
-  margin: 0;
-  letter-spacing: 0.3px;
-}
-
 .folder-chips {
   display: flex;
   flex-wrap: wrap;
@@ -399,11 +509,6 @@ body {
 }
 
 /* ---------- Header actions ---------- */
-.header-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
 .btn.icon {
   font-size: 16px;
   padding: 6px 10px;
@@ -572,6 +677,7 @@ body {
 
 /* ---------- Recovery banner ---------- */
 .recovery-banner {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 16px;
@@ -1007,6 +1113,53 @@ textarea.sharing-input {
   background: rgba(13, 15, 18, 0.95);
 }
 
+.tile-fav {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(13, 15, 18, 0.82);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+  z-index: 2;
+}
+.shelf-item:hover .tile-fav,
+.tile-fav.on {
+  opacity: 1;
+}
+.tile-fav.on {
+  color: #f0b429;
+}
+.tile-fav:hover {
+  color: #f0b429;
+  background: rgba(13, 15, 18, 0.95);
+}
+
+.shelf-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 16px;
+}
+.shelf-heading-count {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.sidebar .shelf-row {
+  font-weight: 500;
+}
+
 /* ---------- Selection ---------- */
 .sel-bar {
   display: flex;
@@ -1176,109 +1329,6 @@ textarea.sharing-input {
   font-size: 46px;
   line-height: 1;
   user-select: none;
-}
-
-/* ---------- Top status bar ---------- */
-.status-bar {
-  flex: none;
-  padding: 8px 20px 0;
-  background: rgba(20, 22, 26, 0.92);
-  border-bottom: 1px solid var(--border);
-}
-.status-row {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  font-size: 12.5px;
-  padding-bottom: 7px;
-}
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex: none;
-  background: var(--text-dim);
-}
-.status-bar.idle .status-dot {
-  background: #57c98a;
-}
-.status-bar.scanning .status-dot {
-  background: #ffca80;
-  animation: pulse 1s ease-in-out infinite;
-}
-.status-bar.indexing .status-dot {
-  background: var(--accent);
-  animation: pulse 1s ease-in-out infinite;
-}
-@keyframes pulse {
-  50% {
-    opacity: 0.35;
-  }
-}
-.status-label {
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-}
-.status-bar.idle .status-label {
-  color: var(--text-dim);
-}
-.status-pct {
-  margin-left: auto;
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
-}
-.status-btn {
-  margin-left: 10px;
-  padding: 3px 10px;
-  border: 1px solid var(--border);
-  background: var(--bg-elev-2);
-  color: var(--text);
-  border-radius: 6px;
-  font-size: 11.5px;
-  cursor: pointer;
-}
-.status-btn:hover {
-  border-color: var(--accent);
-}
-/* When paused, the label (no pct-driven auto margin in every case) still right-aligns the button. */
-.status-bar.paused .status-btn,
-.status-bar.indexing .status-btn {
-  margin-left: 10px;
-}
-.status-bar.paused .status-dot {
-  background: #d9b25f;
-  animation: none;
-}
-.status-bar.paused .status-fill {
-  background: #d9b25f;
-}
-.status-track {
-  height: 3px;
-  width: 100%;
-  overflow: hidden;
-  background: transparent;
-}
-.status-fill {
-  display: block;
-  height: 100%;
-  background: var(--accent);
-  border-radius: 2px;
-  transition: width 0.3s ease;
-}
-.status-bar.scanning .status-fill {
-  background: #ffca80;
-}
-.status-fill.indeterminate {
-  width: 35% !important;
-  animation: indeterminate 1.1s ease-in-out infinite;
-}
-@keyframes indeterminate {
-  0% {
-    margin-left: -35%;
-  }
-  100% {
-    margin-left: 100%;
-  }
 }
 
 /* ---------- Sweep status / spinner ---------- */

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
   BookRow,
   FolderInfo,
@@ -8,7 +8,6 @@ import type {
   ScanStatus,
 } from "../types";
 import { Cover } from "./Cover";
-import { StatusBar } from "./StatusBar";
 import { Sidebar } from "./Sidebar";
 import { MoveDialog } from "./MoveDialog";
 import { moveItems, planMove } from "../lib/api";
@@ -28,21 +27,18 @@ interface Props {
   status: ScanStatus;
   library: LibraryKind;
   firstLibrary: LibraryKind;
-  comicsCount: number;
-  ebooksCount: number;
   onSwitchLibrary: (lib: LibraryKind) => void;
-  onOpenSettings: () => void;
-  onRescan: () => void;
-  onReindex: () => void;
   onAddFolder: () => void;
   onRemoveFolder: (folder: string) => void;
   onRemoveBook: (path: string) => void;
   onRemovePath: (path: string) => void;
-  onPause: () => void;
-  onResume: () => void;
   onBooksChanged: (books: BookRow[]) => void;
   onOpenBook: (book: BookRow) => void;
+  onToggleFavorite: (path: string) => void;
+  onClearBeingRead: (path: string) => void;
 }
+
+type Shelf = "library" | "favorites" | "beingRead";
 
 export function Library({
   books,
@@ -50,21 +46,18 @@ export function Library({
   status,
   library,
   firstLibrary,
-  comicsCount,
-  ebooksCount,
   onSwitchLibrary,
-  onOpenSettings,
-  onRescan,
-  onReindex,
   onAddFolder,
   onRemoveFolder,
   onRemoveBook,
   onRemovePath,
-  onPause,
-  onResume,
   onBooksChanged,
   onOpenBook,
+  onToggleFavorite,
+  onClearBeingRead,
 }: Props) {
+  // Which shelf is showing: the folder view, or a flat filtered shelf.
+  const [shelf, setShelf] = useState<Shelf>("library");
   // Current directory being browsed. null = the virtual "Library" root.
   const [cwd, setCwd] = useState<string | null>(null);
   // Which sidebar tree nodes are expanded.
@@ -107,6 +100,31 @@ export function Library({
     () => folderView(books, folders, cwd),
     [books, folders, cwd],
   );
+
+  // Flat shelves — favourites and recently-opened, for the current library.
+  const favorites = useMemo(
+    () => books.filter((b) => b.favorite),
+    [books],
+  );
+  const beingRead = useMemo(
+    () =>
+      books
+        .filter((b) => b.last_opened != null)
+        .sort((a, b) => (b.last_opened ?? 0) - (a.last_opened ?? 0)),
+    [books],
+  );
+  const shelfBooks = shelf === "favorites" ? favorites : beingRead;
+
+  // Leave a flat shelf and go back to the folder tree.
+  const goFolder = (path: string | null) => {
+    setShelf("library");
+    setCwd(path);
+  };
+
+  // Reset to the folder view when the library changes.
+  useEffect(() => {
+    setShelf("library");
+  }, [library]);
 
   // ----- Windows-style multi-select -----
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -249,49 +267,70 @@ export function Library({
 
   return (
     <div className="library">
-      <StatusBar
-        status={status}
-        comicsCount={comicsCount}
-        booksCount={ebooksCount}
-        onPause={onPause}
-        onResume={onResume}
-      />
-
       <div className="library-body">
         <Sidebar
           library={library}
           firstLibrary={firstLibrary}
           onSwitchLibrary={onSwitchLibrary}
+          shelf={shelf}
+          onShelf={setShelf}
+          favoritesCount={favorites.length}
+          beingReadCount={beingRead.length}
           tree={tree}
           cwd={cwd}
           expanded={expanded}
-          onNavigate={setCwd}
+          onNavigate={goFolder}
           onToggle={toggle}
           onDropFolder={dropOnFolder}
         />
 
         <main className="content">
-          <header className="library-header">
-            <h1>Readaity</h1>
-            <div className="header-actions">
-              <RefreshMenu onRescan={onRescan} onReindex={onReindex} />
-              <button
-                className="btn ghost icon"
-                onClick={onOpenSettings}
-                title="Settings"
-                aria-label="Settings"
-              >
-                ⚙
-              </button>
-              <button className="btn primary" onClick={onAddFolder}>
-                ＋ Add folder
-              </button>
-            </div>
-          </header>
+          {shelf === "library" && (
+            <Breadcrumb crumbs={view.crumbs} onNavigate={goFolder} />
+          )}
 
-          <Breadcrumb crumbs={view.crumbs} onNavigate={setCwd} />
-
-          {folders.length === 0 && idle ? (
+          {shelf !== "library" ? (
+            <>
+              <h2 className="shelf-heading">
+                {shelf === "favorites" ? "Favourites" : "Being Read"}
+                <span className="shelf-heading-count">{shelfBooks.length}</span>
+              </h2>
+              {shelfBooks.length === 0 ? (
+                <div className="empty-inline">
+                  {shelf === "favorites"
+                    ? "No favourites in this library yet. Tap the star on a book to add one."
+                    : "Nothing here yet — books you open show up here."}
+                </div>
+              ) : (
+                <div className="shelf">
+                  {shelfBooks.map((book) =>
+                    book.status === "ready" ? (
+                      <ReadyItem
+                        key={book.path}
+                        book={book}
+                        selected={false}
+                        onActivate={(e) => activateBook(e, book)}
+                        onRemove={
+                          shelf === "beingRead"
+                            ? () => onClearBeingRead(book.path)
+                            : () => onToggleFavorite(book.path)
+                        }
+                        removeTitle={
+                          shelf === "beingRead"
+                            ? "Remove from Being Read"
+                            : "Remove from Favourites"
+                        }
+                        onToggleFavorite={() => onToggleFavorite(book.path)}
+                        onDragStart={(e) => startDrag(e, book.path)}
+                      />
+                    ) : (
+                      <PendingItem key={book.path} book={book} />
+                    ),
+                  )}
+                </div>
+              )}
+            </>
+          ) : folders.length === 0 && idle ? (
             <div className="empty">
               <p className="empty-title">
                 No {library === "ebooks" ? "ebooks" : "comics"} yet
@@ -357,6 +396,8 @@ export function Library({
                       selected={selected.has(book.path)}
                       onActivate={(e) => activateBook(e, book)}
                       onRemove={() => onRemoveBook(book.path)}
+                      removeTitle="Remove from library (keeps file on disk)"
+                      onToggleFavorite={() => onToggleFavorite(book.path)}
                       onDragStart={(e) => startDrag(e, book.path)}
                     />
                   ) : (
@@ -397,76 +438,6 @@ export function Library({
           }}
           onCancel={() => setPendingMove(null)}
         />
-      )}
-    </div>
-  );
-}
-
-/** The ↻ button: a small menu offering the two kinds of refresh. */
-function RefreshMenu({
-  onRescan,
-  onReindex,
-}: {
-  onRescan: () => void;
-  onReindex: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  const pick = (fn: () => void) => {
-    setOpen(false);
-    fn();
-  };
-
-  return (
-    <div className="refresh-menu" ref={ref}>
-      <button
-        className="btn ghost icon"
-        onClick={() => setOpen((v) => !v)}
-        title="Refresh library"
-        aria-label="Refresh library"
-        aria-haspopup="menu"
-        aria-expanded={open}
-      >
-        ↻
-      </button>
-      {open && (
-        <div className="refresh-menu-pop" role="menu">
-          <button
-            className="refresh-menu-item"
-            role="menuitem"
-            onClick={() => pick(onRescan)}
-          >
-            <span className="refresh-menu-title">Scan for new books</span>
-            <span className="refresh-menu-sub">
-              Add files that appeared, drop ones that are gone
-            </span>
-          </button>
-          <button
-            className="refresh-menu-item"
-            role="menuitem"
-            onClick={() => pick(onReindex)}
-          >
-            <span className="refresh-menu-title">Rebuild covers &amp; metadata</span>
-            <span className="refresh-menu-sub">
-              Re-read every book — covers, page counts, hashes
-            </span>
-          </button>
-        </div>
       )}
     </div>
   );
@@ -574,12 +545,16 @@ function ReadyItem({
   selected,
   onActivate,
   onRemove,
+  removeTitle,
+  onToggleFavorite,
   onDragStart,
 }: {
   book: BookRow;
   selected: boolean;
   onActivate: (e: React.MouseEvent) => void;
   onRemove: () => void;
+  removeTitle: string;
+  onToggleFavorite: () => void;
   onDragStart: (e: React.DragEvent) => void;
 }) {
   const isEpub = book.format === "epub";
@@ -621,10 +596,19 @@ function ReadyItem({
         </div>
       </button>
       <button
+        className={`tile-fav${book.favorite ? " on" : ""}`}
+        onClick={onToggleFavorite}
+        title={book.favorite ? "Remove from Favourites" : "Add to Favourites"}
+        aria-label={book.favorite ? "Unfavourite" : "Favourite"}
+        aria-pressed={book.favorite}
+      >
+        {book.favorite ? "★" : "☆"}
+      </button>
+      <button
         className="tile-remove"
         onClick={onRemove}
-        title="Remove from library (keeps file on disk)"
-        aria-label={`Remove ${book.title} from library`}
+        title={removeTitle}
+        aria-label={`${removeTitle}: ${book.title}`}
       >
         ×
       </button>
