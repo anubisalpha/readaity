@@ -57,6 +57,9 @@ list are shared across both.
 - [ ] **Smart single-book import** — suggest a destination folder from the
       existing structure / the book's metadata, with "drop in Unsorted" fallback
 - [ ] Bookmarks, full-text search, reading themes; on-demand "verify library" (re-hash)
+- [ ] **Network sharing** — serve your libraries over the LAN (browser access +
+      book download, PIN-gated), and discover / import from other Readaity
+      instances on the network. Design: [`docs/NETWORK_SHARING.md`](docs/NETWORK_SHARING.md)
 
 ## The two-phase scan
 
