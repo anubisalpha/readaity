@@ -1,7 +1,7 @@
 # Network sharing — design
 
 **Status:** b4 (share server) **implemented** — see *b4 as built* at the end for
-what shipped vs. what was deferred. b5 (discovery + import) not started.
+what shipped vs. what was deferred. b6 (discovery + import) not started.
 
 Readaity gains the ability to serve its libraries over the local network so that:
 
@@ -95,7 +95,7 @@ The browse UI and peers must never see or send real paths.
   `TLS13_AES_128_GCM_SHA256`. Key exchange is limited to `X25519` (with
   `secp384r1` as a fallback). No renegotiation, no compression, no session
   tickets across restarts (the session key rotates anyway).
-- The client half (b5) builds its `rustls::ClientConfig` with the same
+- The client half (b6) builds its `rustls::ClientConfig` with the same
   TLS-1.3-only restriction, so a downgraded peer is rejected before the
   fingerprint check.
 - Browsers will show a "not trusted" warning (expected for self-signed). Two
@@ -297,11 +297,11 @@ eventual clean answer.
 | Phase | Ship | Contents |
 |---|---|---|
 | b4 | Share server | HTTPS `axum` server (self-signed cert via `rcgen`, `rustls`, **TLS 1.3 only**, AEAD suites, no HSTS), `settings` config, opaque-id map, Argon2 PIN (6–10 digits) with per-IP lockout + global throttle + route rate-limiting, private-range guard + optional allowlist, connection/bandwidth caps, audit log, security headers, embedded browse UI, `/trust` cert download + `/trust/help`, Settings "Sharing" tab (PIN, fingerprint, "Trust this device", allowlist, live connections) |
-| b5 | Discovery + import | `mdns-sd` advertise + browse, "Network" sidebar view, TLS fingerprint trust-on-first-use + pinning, peer PIN prompt, multi-select import with md5 dedupe and `rescan` |
+| b6 | Discovery + import | `mdns-sd` advertise + browse, "Network" sidebar view, TLS fingerprint trust-on-first-use + pinning, peer PIN prompt, multi-select import with md5 dedupe and `rescan` |
 
 New crates (b4): `axum`, `axum-server` (rustls), `tokio-rustls` / `rustls`,
 `rcgen`, `tower`, `tower-http` (`fs`, `set-header`), `tower_governor`,
-`argon2`, `hmac`, `sha2`, `time` or `cookie`. (b5): `mdns-sd` — plus a custom
+`argon2`, `hmac`, `sha2`, `time` or `cookie`. (b6): `mdns-sd` — plus a custom
 `rustls` `ServerCertVerifier` for fingerprint pinning, no new crate.
 
 ---
@@ -348,7 +348,7 @@ Two things learned while testing:
   browsers (Chrome/Firefox/Edge/Safari — own TLS stacks) are fine; this only
   bites native Win10 HTTP clients, which is acceptable for the target use.
 
-**Deferred to a b4.x / b5:**
+**Deferred to a b4.x / b6:**
 - **QR codes** — the Sharing tab lists the `https://…` URLs as text and points at
   `…/trust/help`; no QR image yet.
 - **Range / byte-serving** on `/api/download` — currently a plain streamed 200

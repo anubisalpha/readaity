@@ -64,7 +64,7 @@ list are shared across both.
 - [ ] **Smart single-book import** — suggest a destination folder from the
       existing structure / the book's metadata, with "drop in Unsorted" fallback
 - [ ] Bookmarks, full-text search, reading themes; on-demand "verify library" (re-hash)
-- [ ] **Network sharing b5** — discover other Readaity instances on the LAN
+- [ ] **Network sharing (b6)** — discover other Readaity instances on the LAN
       (mDNS) and import books from them. Design: [`docs/NETWORK_SHARING.md`](docs/NETWORK_SHARING.md)
 - [ ] Favourites and a "Being Read" shelf; audiobooks as a third library
 
