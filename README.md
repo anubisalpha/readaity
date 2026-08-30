@@ -85,6 +85,13 @@ Designed so a large library feels instant and files are only opened when needed:
 file is never reopened. Changed → re-queued for the sweep. MD5 is the strong
 integrity/dedup signal computed during the sweep, *not* on every scan.
 
+**Durability.** The DB runs WAL with `synchronous=FULL`, and a clean exit flushes
+the WAL back into the main file (`db::checkpoint` on `RunEvent::Exit`, after the
+sweep is paused on `ExitRequested`). If a launch still finds the file corrupt, it
+salvages the folder list, moves the bad file to `library.db.corrupt-<unix>`,
+builds a fresh DB and re-scans — the book cache (covers, hashes, reading
+positions) is lost but rebuilds; folders survive. A one-time banner tells you.
+
 ## Architecture
 
 ```

@@ -570,6 +570,21 @@ body {
   margin-bottom: 14px;
 }
 
+/* ---------- Recovery banner ---------- */
+.recovery-banner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
+  background: #4a2f1a;
+  border-bottom: 1px solid #7a4a24;
+  color: #ffdcc0;
+  font-size: 13px;
+}
+.recovery-banner span {
+  flex: 1;
+}
+
 /* ---------- Network sharing tab ---------- */
 .sharing {
   display: flex;

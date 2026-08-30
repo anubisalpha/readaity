@@ -628,6 +628,20 @@ fn start_sweep(app: AppHandle) {
     });
 }
 
+/// After a corrupt DB was quarantined and rebuilt, re-walk the salvaged folders
+/// (Phase 1) so the shelf repopulates; the sweep then rebuilds covers/hashes.
+fn rescan_after_recovery(app: &AppHandle) {
+    let db = app.state::<AppDb>();
+    let Ok(conn) = db.0.lock() else {
+        return;
+    };
+    if let Ok(folders) = db::all_folders(&conn) {
+        for f in folders {
+            let _ = library::quick_scan(&conn, &f.library, &[f.path]);
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -635,11 +649,19 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let path = db_path(&app.handle()).map_err(|e| e.to_string())?;
-            let conn = db::open(&path).map_err(|e| e.to_string())?;
+            let (conn, recovered) = db::open_resilient(&path).map_err(|e| e.to_string())?;
             app.manage(AppDb(Mutex::new(conn)));
             app.manage(Sweeping(AtomicBool::new(false)));
             app.manage(Paused(AtomicBool::new(false)));
             app.manage(share::ShareState::default());
+
+            if recovered {
+                // The old DB was corrupt and has been rebuilt from the salvaged
+                // folder list. Re-walk them so the book cache repopulates.
+                rescan_after_recovery(&app.handle());
+                let _ = app.handle().emit("library-recovered", ());
+            }
+
             // Catch up on any books left pending from a previous session.
             start_sweep(app.handle().clone());
             // Re-arm the LAN share server if the user had it on.
@@ -691,6 +713,23 @@ pub fn run() {
             pause_indexing,
             resume_indexing
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| match event {
+            // Last window is closing — stop the background sweep so it isn't
+            // mid-write when we checkpoint.
+            tauri::RunEvent::ExitRequested { .. } => {
+                app_handle.state::<Paused>().0.store(true, Ordering::SeqCst);
+            }
+            // Event loop about to exit — flush the WAL into the main file so the
+            // next launch opens one consistent file with nothing to replay.
+            tauri::RunEvent::Exit => {
+                if let Some(db) = app_handle.try_state::<AppDb>() {
+                    if let Ok(conn) = db.0.lock() {
+                        db::checkpoint(&conn);
+                    }
+                }
+            }
+            _ => {}
+        });
 }

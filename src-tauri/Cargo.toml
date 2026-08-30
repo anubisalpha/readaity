@@ -1,6 +1,6 @@
 [package]
 name = "readaity"
-version = "0.4.0"
+version = "0.4.1"
 description = "A local, DRM-free ebook & comic reader"
 authors = ["Anubis Productions"]
 edition = "2021"

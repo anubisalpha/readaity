@@ -48,13 +48,39 @@ pub struct BookRow {
 }
 
 /// Open (or create) the DB and ensure the schema exists.
+///
+/// A corrupt existing file is reported as `Err` starting with `CORRUPT:` so the
+/// caller can decide whether to quarantine and rebuild — see [`open_resilient`].
 pub fn open(db_path: &std::path::Path) -> Result<Connection, String> {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
+    let existed = db_path.exists();
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+
+    // WAL + synchronous=FULL: FULL closes the small window where a hard kill
+    // *during a checkpoint* (WAL flushed back into the main file) could tear a
+    // page. The extra fsyncs are noise next to the sweep's archive I/O.
     conn.pragma_update(None, "journal_mode", "WAL").ok();
+    conn.pragma_update(None, "synchronous", "FULL").ok();
     conn.pragma_update(None, "foreign_keys", "ON").ok();
+    conn.busy_timeout(std::time::Duration::from_secs(5)).ok();
+
+    // Fail fast on a pre-existing corrupt file rather than half-applying the
+    // schema batch on top of it.
+    if existed {
+        let ok = conn
+            .query_row("PRAGMA quick_check(1)", [], |r| r.get::<_, String>(0))
+            .map(|s| s == "ok")
+            .unwrap_or(false);
+        if !ok {
+            return Err(format!(
+                "CORRUPT: {} failed its integrity check",
+                db_path.display()
+            ));
+        }
+    }
+
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS folders (
@@ -154,6 +180,87 @@ pub fn open(db_path: &std::path::Path) -> Result<Connection, String> {
     .ok();
 
     Ok(conn)
+}
+
+/// Open the DB, recovering from a corrupt file if needed.
+///
+/// If the existing file fails its integrity check, its folder list is salvaged
+/// (best effort), the bad file is moved to `library.db.corrupt-<unix>`, a fresh
+/// DB is created, and the folders are re-added. The book cache (covers, page
+/// counts, hashes, reading positions) is lost but rebuilds on the next scan.
+/// Returns `(conn, recovered)` — `recovered == true` means a rebuild happened.
+pub fn open_resilient(db_path: &std::path::Path) -> Result<(Connection, bool), String> {
+    match open(db_path) {
+        Ok(conn) => Ok((conn, false)),
+        Err(e) if e.starts_with("CORRUPT:") => {
+            let folders = salvage_folders(db_path);
+            quarantine(db_path)?;
+            let conn = open(db_path)?;
+            for f in &folders {
+                let _ = add_folder(&conn, &f.path, &f.mode, &f.library);
+            }
+            Ok((conn, true))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Read the `folders` table from a possibly-corrupt file, opened read-only and
+/// `immutable` so a damaged `books` btree doesn't block it.
+fn salvage_folders(db_path: &std::path::Path) -> Vec<FolderRow> {
+    let uri = format!(
+        "file:{}?mode=ro&immutable=1",
+        db_path.to_string_lossy().replace('\\', "/")
+    );
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI;
+    let Ok(conn) = Connection::open_with_flags(uri, flags) else {
+        return Vec::new();
+    };
+    let Ok(mut stmt) = conn.prepare("SELECT path, mode, library FROM folders") else {
+        return Vec::new();
+    };
+    let rows = stmt.query_map([], |r| {
+        Ok(FolderRow {
+            path: r.get(0)?,
+            mode: r.get(1)?,
+            library: r.get(2)?,
+        })
+    });
+    match rows {
+        Ok(iter) => iter.filter_map(Result::ok).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Move a corrupt DB (and its sidecars) aside so a fresh one can be created.
+fn quarantine(db_path: &std::path::Path) -> Result<(), String> {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let dead = db_path.with_file_name(format!(
+        "{}.corrupt-{ts}",
+        db_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "library.db".into())
+    ));
+    std::fs::rename(db_path, &dead).map_err(|e| format!("could not quarantine corrupt DB: {e}"))?;
+    for ext in ["-wal", "-shm"] {
+        let side = db_path.with_file_name(format!(
+            "{}{ext}",
+            db_path.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        let _ = std::fs::remove_file(side);
+    }
+    Ok(())
+}
+
+/// Flush the WAL back into the main file and truncate it. Call on a clean exit
+/// so the next launch opens a single consistent file with no journal to replay.
+pub fn checkpoint(conn: &Connection) {
+    let _ = conn.pragma_update(None, "wal_checkpoint", "TRUNCATE");
+    let _ = conn.execute_batch("PRAGMA optimize");
 }
 
 fn now() -> i64 {
@@ -800,4 +907,105 @@ pub fn set_progress(conn: &Connection, path: &str, page: i64) -> Result<(), Stri
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "readaity-dbtest-{}-{}.db",
+            std::process::id(),
+            name
+        ));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    #[test]
+    fn fresh_open_creates_schema() {
+        let p = tmp("fresh");
+        let conn = open(&p).unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('folders','books','settings','share_audit')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 4);
+        drop(conn);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn corrupt_file_is_rejected() {
+        let p = tmp("corrupt");
+        std::fs::write(&p, vec![0u8; 8192]).unwrap();
+        let err = open(&p).unwrap_err();
+        assert!(err.starts_with("CORRUPT:"), "{err}");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn open_resilient_rebuilds_and_quarantines_corrupt_db() {
+        let p = tmp("resilient");
+        std::fs::write(&p, b"this is not a sqlite database at all").unwrap();
+
+        let (conn, recovered) = open_resilient(&p).unwrap();
+        assert!(recovered);
+        // fresh DB is usable
+        add_folder(&conn, "X:/Books", "tree", "ebooks").unwrap();
+        assert_eq!(list_folders(&conn, "ebooks").unwrap().len(), 1);
+        drop(conn);
+
+        // the bad file was moved aside, not deleted
+        let quarantined = std::fs::read_dir(p.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .contains(&format!("{}.corrupt-", p.file_name().unwrap().to_string_lossy()))
+            });
+        assert!(quarantined, "corrupt file should be quarantined");
+
+        // cleanup
+        let _ = std::fs::remove_file(&p);
+        for e in std::fs::read_dir(p.parent().unwrap()).unwrap().flatten() {
+            let n = e.file_name();
+            if n.to_string_lossy()
+                .starts_with(&p.file_name().unwrap().to_string_lossy().to_string())
+            {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+
+    #[test]
+    fn salvage_folders_reads_a_healthy_db() {
+        let p = tmp("salvage");
+        {
+            let conn = open(&p).unwrap();
+            add_folder(&conn, "K:/Comics/Farscape", "tree", "comics").unwrap();
+            add_folder(&conn, "K:/eBooks/Novels", "flat", "ebooks").unwrap();
+        }
+        let got = salvage_folders(&p);
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().any(|f| f.library == "comics" && f.mode == "tree"));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn checkpoint_is_harmless() {
+        let p = tmp("ckpt");
+        let conn = open(&p).unwrap();
+        add_folder(&conn, "A:/x", "tree", "comics").unwrap();
+        checkpoint(&conn); // must not panic
+        assert_eq!(list_folders(&conn, "comics").unwrap().len(), 1);
+        drop(conn);
+        let _ = std::fs::remove_file(&p);
+    }
 }

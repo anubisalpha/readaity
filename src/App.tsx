@@ -15,6 +15,7 @@ import {
   listBooks,
   listFolders,
   onBookUpdated,
+  onLibraryRecovered,
   onScanStatus,
   pauseIndexing,
   pickFolder,
@@ -71,6 +72,7 @@ function App() {
   const [pendingAdd, setPendingAdd] = useState<PendingAdd | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [counts, setCounts] = useState({ comics: 0, ebooks: 0 });
+  const [recovered, setRecovered] = useState(false);
 
   const refreshCounts = useCallback(() => {
     libraryCounts()
@@ -98,6 +100,7 @@ function App() {
           setStatus(s);
           if (s.phase === "idle") refreshCounts(); // sweep finished
         }),
+        onLibraryRecovered(() => setRecovered(true)),
       ]);
     })();
     return () => unlisteners.forEach((u) => u());
@@ -218,6 +221,19 @@ function App() {
 
   return (
     <>
+      {recovered && (
+        <div className="recovery-banner" role="status">
+          <span>
+            Your library file was damaged and has been rebuilt. Your folders are
+            back and the books are being re-scanned now — covers and reading
+            positions will repopulate. The old file was kept alongside it.
+          </span>
+          <button className="btn small" onClick={() => setRecovered(false)}>
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Library stays mounted so scroll, folder location and selection persist
           when you open a book or Settings and come back. */}
       <Library

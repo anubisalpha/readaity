@@ -265,3 +265,8 @@ export function onBookUpdated(cb: (book: BookRow) => void): Promise<UnlistenFn> 
 export function onScanStatus(cb: (s: ScanStatus) => void): Promise<UnlistenFn> {
   return listen<ScanStatus>("scan-status", (e) => cb(e.payload));
 }
+
+/** Fired once at startup if a corrupt DB was quarantined and rebuilt. */
+export function onLibraryRecovered(cb: () => void): Promise<UnlistenFn> {
+  return listen("library-recovered", () => cb());
+}
