@@ -27,9 +27,10 @@ list are shared across both.
 
 **Ebooks** — `EPUB`, `PDF`, `MOBI` / `PRC` / `AZW` / `AZW3` (unencrypted),
 `TXT`, `RTF`. `LRF` is catalogued but not read natively — convert to EPUB
-(e.g. with Calibre) to open it fully. Kindle-format support and its known gaps
-(KF8-only `.azw3`, HUFF/CDIC, `.kfx`) are written up in
-[`docs/KINDLE_READING.md`](docs/KINDLE_READING.md).
+(e.g. with Calibre) to open it fully. Modern KF8 `.azw3` is fully supported,
+HUFF/CDIC compression included; fixed-layout `.azw3` (comics, manga, picture
+books) open in a page-by-page reader. `.kfx` stays out of scope (needs the
+Calibre bridge). See [`docs/KINDLE_READING.md`](docs/KINDLE_READING.md).
 
 - [x] Add library folders (native picker), recursively scanned **in place** —
       your existing folder structure is never touched or moved
@@ -41,7 +42,10 @@ list are shared across both.
     fit-width / fit-height
   - EPUB — reflowable via `epub.js`, locations-based % progress
   - PDF — `pdf.js`, with a generated shelf cover
-  - MOBI / AZW / RTF — extracted to HTML, rendered in an isolated frame
+  - MOBI / AZW / AZW3 / RTF — extracted to HTML in an isolated frame; KF8
+    books get a "Contents" chapter panel
+  - Fixed-layout `.azw3` (comics / manga / picture books) — page-by-page
+    reader, auto-detected, movable into the Comics library
   - TXT — scroll reader with BOM-aware UTF-8 / UTF-16 decoding
 - [x] Reading position remembered per book (page index for comics/PDF,
       per-mille for reflowable formats) and resumed on reopen
