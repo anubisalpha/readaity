@@ -1,6 +1,7 @@
 # Kindle-format reading (DRM-free only)
 
-Investigation notes, 2026-08-30. Scope: opening **DRM-free** Kindle-format
+Investigation notes, 2026-08-30; implementation landed in v0.6.0, 2026-08-31.
+Scope: opening **DRM-free** Kindle-format
 ebooks in Readaity. Nothing here involves DRM circumvention — that boundary
 is firm (see project memory / `feedback-drm-free-reader-boundary`). Protected
 files stay detected-and-refused with a clean message.
@@ -58,8 +59,10 @@ the container:
      data URIs, neutralise leftover `kindle:pos:` links.
   6. **Chapter TOC** (2026-08-31): `assemble()` also emits a hidden
      `<nav id="kf8-toc">` of `<a href="#kf8-sN">` from each section's `<title>`
-     — boilerplate ("Book Title", "Cover", …) and titles repeated on ≥3 sections
-     are dropped. `HtmlReader` lifts it into a "☰ Contents" side panel and
+     — a JUNK denylist drops boilerplate ("Book Title", "Cover", …) and
+     consecutive duplicate titles are collapsed. There is **no** frequency
+     filter (a multi-chapter novel legitimately titles every section with the
+     book name). `HtmlReader` lifts the nav into a "☰ Contents" side panel and
      `scrollIntoView`s the anchor. MOBI-6 NCX TOC still not done.
 
   Tests (`#[ignore]`, env-var gated): `kf8_real` (one file), `kf8_dir` (batch
@@ -70,6 +73,23 @@ the container:
   spot-checked in the app. Small books with no FDST / no skel+frag tables fall
   back to flow 0 directly. A couple of reflowable files reassemble into oddly
   few `<div>` sections (`The Magic of Oz` → 2) but with all text present.
+
+### 1c. Comic-azw3 → Comics library — **done 2026-08-31 (Part D)**
+
+A fixed-layout azw3 catalogued in Ebooks can be moved to Comics:
+- `books.library_override` column — the move survives rescans
+  (`upsert_discovered` COALESCEs it over the folder library;
+  `prune_missing` is library-scoped so the other library's scan won't drop it);
+- commands `set_book_library`, `folder_layout_split`, `split_folder_libraries`;
+- `quick_scan` runs a cheap record-0 `mobi::meta` in Phase 1 to flag
+  `fixed_layout` early, so the badge/prompt appear before the sweep;
+- UI: "▣ comic" tile badge, "→ Comics" hover button, a nudge banner in
+  `Kf8Reader`, and — on adding a folder that holds both — a "split libraries"
+  dialog ("Move N to Comics");
+- `db::list_folders` unions in any folder that has books in the library via
+  override, so a moved book appears under a Comics folder node, not just the
+  flat shelves.
+Verified end-to-end in-app.
 
 ### 1b. Fixed-layout KF8 (comics / manga / picture books) — **done 2026-08-31**
 
@@ -126,9 +146,8 @@ not a native parser. `.kfx` is deliberately not in `EBOOK_EXTS`.
 
 - **MOBI-6 NCX TOC** (above).
 - **Fixed-layout image sharing** — Defiance-class books duplicate spread images
-  across pages; serve images by a per-book URL instead of inlining.
-- **Comic-azw3 folder model** — a book moved to Comics (`library_override`)
-  shows in Comics shelves but not the folder tree, since its folder isn't
-  registered under Comics. The folder-add "split libraries" prompt needs a
-  folder that can feed both libraries.
-- **HUFF/CDIC** — done. **KFX** — defer to the Calibre bridge; don't build native.
+  across pages; serve images by a per-book URL instead of inlining
+  (Defiance ~290 MB in the lazy cache today).
+- **KFX** — defer to the Calibre bridge; don't build native.
+- **Done:** KF8 reassembly, HUFF/CDIC, fixed-layout page reader, KF8 chapter
+  TOC, comic-azw3 → Comics (Part D). Shipped in **v0.6.0** (2026-08-31).
