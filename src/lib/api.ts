@@ -10,6 +10,7 @@ import type {
   DupGroup,
   FolderInfo,
   FolderMode,
+  ImportPlan,
   LibraryKind,
   MoveOp,
   MovePlan,
@@ -24,6 +25,27 @@ import type {
 /** Open the native folder picker. Returns null if cancelled. */
 export function pickFolder(): Promise<string | null> {
   return invoke<string | null>("pick_folder");
+}
+
+/** Native multi-file picker filtered to the library's formats. */
+export function pickBookFiles(library: LibraryKind): Promise<string[]> {
+  return invoke<string[]>("pick_book_files", { library });
+}
+
+/** Rank the library's folders as a destination for each picked file. */
+export function suggestImport(
+  paths: string[],
+  library: LibraryKind,
+): Promise<ImportPlan[]> {
+  return invoke<ImportPlan[]>("suggest_import", { paths, library });
+}
+
+/** Copy each file into its chosen folder, then rescan. Returns the new list. */
+export function importBooks(
+  items: { path: string; dest: string }[],
+  library: LibraryKind,
+): Promise<BookRow[]> {
+  return invoke<BookRow[]>("import_books", { items, library });
 }
 
 /** Fast pre-add probe (no archives opened) to decide the add mode. */

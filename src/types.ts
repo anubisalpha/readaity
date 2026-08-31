@@ -71,6 +71,22 @@ export interface PageData {
   base64: string;
 }
 
+/** A ranked destination folder for a book being imported. */
+export interface ImportSuggestion {
+  folder: string;
+  score: number;
+  reason: string;
+}
+
+/** A picked file plus where Readaity thinks it should go. */
+export interface ImportPlan {
+  path: string;
+  title: string;
+  format: string;
+  /** Every library folder, best destination first. */
+  suggestions: ImportSuggestion[];
+}
+
 /** A saved place in a book. `position` matches the reader's `last_page` unit:
  *  a page index for comic/PDF, per-mille (0–1000) for reflowable formats. */
 export interface Bookmark {

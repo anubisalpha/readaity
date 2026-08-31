@@ -58,6 +58,105 @@ async fn pick_folder(app: AppHandle) -> Option<String> {
         .and_then(|p| p.to_str().map(|s| s.to_string()))
 }
 
+/// Native multi-file picker filtered to `library`'s book formats.
+#[tauri::command]
+async fn pick_book_files(app: AppHandle, library: String) -> Vec<String> {
+    let exts: &[&str] = if library == "ebooks" {
+        formats::EBOOK_EXTS
+    } else {
+        formats::COMIC_EXTS
+    };
+    app.dialog()
+        .file()
+        .add_filter("Books", exts)
+        .blocking_pick_files()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|p| p.into_path().ok())
+        .filter_map(|p| p.to_str().map(String::from))
+        .collect()
+}
+
+#[derive(serde::Serialize)]
+struct ImportSuggestion {
+    folder: String,
+    score: i32,
+    reason: String,
+}
+
+#[derive(serde::Serialize)]
+struct ImportPlan {
+    path: String,
+    title: String,
+    format: String,
+    suggestions: Vec<ImportSuggestion>,
+}
+
+/// For each picked file, work out its title/format and rank the library's
+/// folders as destinations (best first).
+#[tauri::command]
+fn suggest_import(
+    app: AppHandle,
+    paths: Vec<String>,
+    library: String,
+) -> Result<Vec<ImportPlan>, String> {
+    let db = app.state::<AppDb>();
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let plans = paths
+        .iter()
+        .filter_map(|p| {
+            let pp = std::path::Path::new(p);
+            let format = formats::detect(pp, &library)?;
+            let title = pp
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Untitled")
+                .to_string();
+            let suggestions = library::suggest_folders(&conn, &library, &title, &format)
+                .into_iter()
+                .map(|s| ImportSuggestion {
+                    folder: s.folder,
+                    score: s.score,
+                    reason: s.reason,
+                })
+                .collect();
+            Some(ImportPlan { path: p.clone(), title, format, suggestions })
+        })
+        .collect();
+    Ok(plans)
+}
+
+#[derive(serde::Deserialize)]
+struct ImportItem {
+    path: String,
+    dest: String,
+}
+
+/// Copy each file into its chosen library folder, then rescan those folders so
+/// the new books are catalogued and swept.
+#[tauri::command]
+fn import_books(
+    app: AppHandle,
+    items: Vec<ImportItem>,
+    library: String,
+) -> Result<Vec<BookRow>, String> {
+    let mut dests: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for it in &items {
+        library::import_one(&it.path, &it.dest)?;
+        dests.insert(it.dest.clone());
+    }
+    {
+        let db = app.state::<AppDb>();
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        for d in &dests {
+            library::quick_scan(&conn, &library, &[d.clone()])?;
+        }
+    }
+    app.state::<Paused>().0.store(false, Ordering::SeqCst);
+    start_sweep(app.clone());
+    list_books(app, library)
+}
+
 /// Phase 1 for one new folder, then kick off the background validity sweep.
 /// Returns the current book list immediately (discovered rows show as placeholders).
 #[tauri::command]
@@ -934,6 +1033,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             pick_folder,
+            pick_book_files,
+            suggest_import,
+            import_books,
             add_folder,
             remove_folder,
             remove_book,

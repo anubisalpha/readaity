@@ -865,6 +865,26 @@ pub fn list_all_books(conn: &Connection) -> Result<Vec<BookRow>, String> {
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+/// `(title, format)` for the books in one folder of one library — for the
+/// smart-import destination scorer.
+pub fn books_in_folder(
+    conn: &Connection,
+    folder: &str,
+    library: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let norm = folder.replace('\\', "/");
+    let mut stmt = conn
+        .prepare(
+            "SELECT title, format FROM books
+             WHERE REPLACE(folder, '\\', '/') = ?1 AND library = ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![norm, library], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
 /// A set of books that are byte-identical (same MD5).
 #[derive(Serialize, Clone)]
 pub struct DupGroup {

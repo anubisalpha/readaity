@@ -1,5 +1,6 @@
 import type { ScanStatus } from "../types";
 import { RefreshMenu } from "./RefreshMenu";
+import { AddMenu } from "./AddMenu";
 
 /** The books badge — matches the app icon and the aity.uk hero badge. */
 function BrandMark() {
@@ -17,6 +18,7 @@ interface Props {
   onPause: () => void;
   onResume: () => void;
   onAddFolder: () => void;
+  onAddBooks: () => void;
   onRescan: () => void;
   onReindex: () => void;
   onOpenSettings: () => void;
@@ -34,6 +36,7 @@ export function AppHeader({
   onPause,
   onResume,
   onAddFolder,
+  onAddBooks,
   onRescan,
   onReindex,
   onOpenSettings,
@@ -82,9 +85,7 @@ export function AppHeader({
       </div>
 
       <div className="app-header-actions">
-        <button className="btn primary" onClick={onAddFolder}>
-          ＋ Add folder
-        </button>
+        <AddMenu onAddFolder={onAddFolder} onAddBooks={onAddBooks} />
         <RefreshMenu onRescan={onRescan} onReindex={onReindex} />
         <button
           className="btn ghost icon"

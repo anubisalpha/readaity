@@ -4,6 +4,7 @@ import type {
   BookRow,
   FolderInfo,
   FolderMode,
+  ImportPlan,
   LibraryKind,
   ProbeResult,
   ReaderPrefs,
@@ -16,9 +17,12 @@ import {
 import {
   addFolder,
   getSetting,
+  importBooks,
   libraryCounts,
   listBooks,
   listFolders,
+  pickBookFiles,
+  suggestImport,
   onBookUpdated,
   onLibraryRecovered,
   onScanStatus,
@@ -45,6 +49,7 @@ import { Library } from "./components/Library";
 import { Reader } from "./components/Reader";
 import { EbookReader } from "./components/EbookReader";
 import { AddFolderDialog } from "./components/AddFolderDialog";
+import { AddBooksDialog } from "./components/AddBooksDialog";
 import { Settings } from "./components/Settings";
 import { isComic } from "./lib/formats";
 
@@ -89,6 +94,8 @@ function App() {
     other: number;
   } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [importPlans, setImportPlans] = useState<ImportPlan[] | null>(null);
+  const [importBusy, setImportBusy] = useState(false);
   const [counts, setCounts] = useState({ comics: 0, ebooks: 0 });
   const [recovered, setRecovered] = useState(false);
   const [readerPrefs, setReaderPrefs] = useState<ReaderPrefs>(DEFAULT_READER_PREFS);
@@ -209,6 +216,32 @@ function App() {
       await doAdd(folder, "tree");
     }
   }, [doAdd, library]);
+
+  const handleAddBooks = useCallback(async () => {
+    try {
+      const files = await pickBookFiles(library);
+      if (!files.length) return;
+      setImportPlans(await suggestImport(files, library));
+    } catch (e) {
+      console.error("pick books failed", e);
+    }
+  }, [library]);
+
+  const doImport = useCallback(
+    async (items: { path: string; dest: string }[]) => {
+      setImportBusy(true);
+      try {
+        setBooks(sortBooks(await importBooks(items, library)));
+        setFolders(await listFolders(library));
+        setImportPlans(null);
+      } catch (e) {
+        console.error("import failed", e);
+      } finally {
+        setImportBusy(false);
+      }
+    },
+    [library],
+  );
 
   const handleRemoveFolder = useCallback(
     async (folder: string) => {
@@ -348,6 +381,7 @@ function App() {
           onPause={handlePause}
           onResume={handleResume}
           onAddFolder={handleAddFolder}
+          onAddBooks={handleAddBooks}
           onRescan={handleRescan}
           onReindex={handleReindex}
           onOpenSettings={() => setSettingsOpen(true)}
@@ -380,6 +414,20 @@ function App() {
           probe={pendingAdd.probe}
           onChoose={(mode) => doAdd(pendingAdd.path, mode)}
           onCancel={() => setPendingAdd(null)}
+        />
+      )}
+
+      {importPlans && (
+        <AddBooksDialog
+          library={library}
+          plans={importPlans}
+          busy={importBusy}
+          onImport={doImport}
+          onAddFolderFirst={() => {
+            setImportPlans(null);
+            handleAddFolder();
+          }}
+          onCancel={() => setImportPlans(null)}
         />
       )}
 

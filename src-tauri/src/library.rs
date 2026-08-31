@@ -221,6 +221,138 @@ pub fn name_key_ctx(title: &str, folder: &str) -> Option<String> {
     Some(format!("{series}#{issue:04}"))
 }
 
+// ---------- smart single-book import ----------
+
+/// Lower-cased word tokens of a title: brackets stripped, punctuation to spaces,
+/// very short and common filler words dropped.
+fn title_tokens(s: &str) -> std::collections::HashSet<String> {
+    const STOP: &[&str] = &[
+        "the", "a", "an", "of", "and", "or", "to", "in", "for", "vol", "volume",
+        "book", "issue", "part", "illustrated", "edition", "no", "vs",
+    ];
+    strip_brackets(&s.to_lowercase())
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .filter(|t| t.len() > 2 && !STOP.contains(t) && t.parse::<u64>().is_err())
+        .map(|t| t.to_string())
+        .collect()
+}
+
+/// A candidate destination folder for an imported book, with why it was ranked.
+pub struct FolderSuggestion {
+    pub folder: String,
+    pub score: i32,
+    pub reason: String,
+}
+
+/// Rank every folder in `library` as a destination for a book titled `title`
+/// (format `fmt`), best first. Looks at the folder name and the books already
+/// in it (series match, title-word overlap, same format).
+pub fn suggest_folders(
+    conn: &Connection,
+    library: &str,
+    title: &str,
+    fmt: &str,
+) -> Vec<FolderSuggestion> {
+    let want = title_tokens(title);
+    let want_series = name_key_ctx(title, "").map(|k| k.split('#').next().unwrap_or("").to_string());
+
+    let folders = db::list_folders(conn, library).unwrap_or_default();
+    let single = folders.len() == 1;
+    let mut out: Vec<FolderSuggestion> = folders
+        .into_iter()
+        .map(|f| {
+            let folder = f.path;
+            let mut score = 0i32;
+            let mut reason = String::new();
+
+            let fname = basename_of(&folder);
+            let fname_tokens = title_tokens(&fname);
+            let fn_overlap = want.intersection(&fname_tokens).count();
+            if fn_overlap > 0 {
+                score += fn_overlap as i32 * 8;
+                reason = format!("folder name matches “{fname}”");
+            }
+
+            let books = db::books_in_folder(conn, &folder, library).unwrap_or_default();
+            let mut best_ov = 0usize;
+            let mut best_title = String::new();
+            let mut series_hit = false;
+            let mut format_hit = false;
+            for (bt, bfmt) in &books {
+                if bfmt == fmt {
+                    format_hit = true;
+                }
+                if let (Some(a), Some(b)) = (&want_series, name_key_ctx(bt, "")) {
+                    if !a.is_empty() && b.starts_with(&format!("{a}#")) {
+                        series_hit = true;
+                    }
+                }
+                let ov = want.intersection(&title_tokens(bt)).count();
+                if ov > best_ov {
+                    best_ov = ov;
+                    best_title = bt.clone();
+                }
+            }
+            if series_hit {
+                score += 60;
+                reason = "same series as books already here".into();
+            } else if best_ov >= 2 {
+                score += best_ov as i32 * 10;
+                if reason.is_empty() {
+                    reason = format!("similar to “{best_title}”");
+                }
+            }
+            if format_hit {
+                score += 3;
+            }
+            if single {
+                score += 1;
+            }
+            if reason.is_empty() {
+                reason = if books.is_empty() {
+                    "empty folder".into()
+                } else {
+                    format!("{} book{} here", books.len(), if books.len() == 1 { "" } else { "s" })
+                };
+            }
+            FolderSuggestion { folder, score, reason }
+        })
+        .collect();
+    out.sort_by(|a, b| b.score.cmp(&a.score).then(a.folder.cmp(&b.folder)));
+    out
+}
+
+/// Copy one file into `dest_dir`, giving it a clean `<title>.<ext>` name and
+/// renaming on collision. Returns the final path.
+pub fn import_one(src: &str, dest_dir: &str) -> Result<String, String> {
+    let src_p = std::path::Path::new(src);
+    let ext = src_p
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let stem = src_p
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("book");
+    let name = if ext.is_empty() {
+        stem.to_string()
+    } else {
+        format!("{stem}.{ext}")
+    };
+    let dest = norm_path(dest_dir);
+    std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+    let mut target = format!("{dest}/{name}");
+    if std::path::Path::new(&target).exists() {
+        target = unique_target(&dest, &name);
+    }
+    std::fs::copy(src, &target).map_err(|e| format!("copy {src}: {e}"))?;
+    Ok(target)
+}
+
 /// Plan a move of `sources` into `dest_dir`, without touching disk.
 /// Returns (src, display-name, collides, error) per source.
 pub fn plan_moves(
@@ -624,6 +756,37 @@ mod tests {
         // Moving a folder into itself is rejected at plan time.
         let self_plan = plan_moves(&[sub.to_str().unwrap().to_string()], sub.to_str().unwrap());
         assert!(self_plan[0].3.is_some());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn suggest_folders_ranks_by_series_and_name() {
+        let base = std::env::temp_dir().join(format!("readaity_sugg_{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let conn = db::open(&base.join("l.db")).unwrap();
+
+        let dune = base.join("Dune").to_string_lossy().into_owned();
+        let random = base.join("Random").to_string_lossy().into_owned();
+        db::add_folder(&conn, &dune, "tree", "ebooks").unwrap();
+        db::add_folder(&conn, &random, "tree", "ebooks").unwrap();
+        // A Dune book already lives in the Dune folder.
+        conn.execute(
+            "INSERT INTO books(path,folder,format,title,size,mtime,page_count,status,last_page,library,updated_at)
+             VALUES('a','{d}','epub','Dune Messiah',1,0,0,'ready',0,'ebooks',0)"
+                .replace("{d}", &dune)
+                .as_str(),
+            [],
+        )
+        .unwrap();
+
+        let s = suggest_folders(&conn, "ebooks", "Dune - Children of Dune", "epub");
+        assert_eq!(basename_of(&s[0].folder), "Dune", "series match wins");
+        assert!(s[0].score > s[1].score);
+
+        // A title matching neither falls back to a neutral, still-listed folder.
+        let s2 = suggest_folders(&conn, "ebooks", "The Hobbit", "epub");
+        assert_eq!(s2.len(), 2, "every folder is offered");
 
         std::fs::remove_dir_all(&base).ok();
     }
