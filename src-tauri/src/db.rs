@@ -50,6 +50,9 @@ pub struct BookRow {
     /// Unix seconds this book was last opened, or `None` if never opened or
     /// dismissed from the per-library "Being Read" shelf.
     pub last_opened: Option<i64>,
+    /// Fixed-layout KF8 (comic / manga / picture book): read as a page-image
+    /// pager, not reflowable text.
+    pub fixed_layout: bool,
 }
 
 /// Open (or create) the DB and ensure the schema exists.
@@ -186,10 +189,12 @@ pub fn open(db_path: &std::path::Path) -> Result<Connection, String> {
     )
     .ok();
 
-    // Migration: add books.favorite / books.last_opened (pre-shelves DBs).
+    // Migration: add books.favorite / books.last_opened (pre-shelves DBs),
+    // books.fixed_layout (comic/picture-book KF8 detection).
     for (col, decl) in [
         ("favorite", "INTEGER NOT NULL DEFAULT 0"),
         ("last_opened", "INTEGER"),
+        ("fixed_layout", "INTEGER NOT NULL DEFAULT 0"),
     ] {
         let has: bool = conn
             .query_row(
@@ -595,13 +600,14 @@ pub fn set_validated(
     cover: &[u8],
     cover_w: i64,
     cover_h: i64,
+    fixed_layout: bool,
 ) -> Result<(), String> {
     // An empty cover (e.g. an ebook with no extractable image) is stored NULL.
     let cover_opt: Option<&[u8]> = if cover.is_empty() { None } else { Some(cover) };
     conn.execute(
         "UPDATE books SET page_count=?2, md5=?3, cover=?4, cover_w=?5, cover_h=?6,
-            status='ready', error=NULL, updated_at=?7 WHERE path=?1",
-        params![path, page_count, md5, cover_opt, cover_w, cover_h, now()],
+            fixed_layout=?8, status='ready', error=NULL, updated_at=?7 WHERE path=?1",
+        params![path, page_count, md5, cover_opt, cover_w, cover_h, now(), fixed_layout as i64],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -633,11 +639,12 @@ fn map_book(r: &rusqlite::Row) -> rusqlite::Result<BookRow> {
         has_cover: r.get(10)?,
         favorite: r.get::<_, i64>(11)? != 0,
         last_opened: r.get(12)?,
+        fixed_layout: r.get::<_, i64>(13)? != 0,
     })
 }
 
 const BOOK_COLS: &str = "path, folder, format, title, size, mtime, page_count, status, error, \
-                         last_page, cover IS NOT NULL, favorite, last_opened";
+                         last_page, cover IS NOT NULL, favorite, last_opened, fixed_layout";
 
 /// Books in one library (for the shelf).
 pub fn list_books(conn: &Connection, library: &str) -> Result<Vec<BookRow>, String> {

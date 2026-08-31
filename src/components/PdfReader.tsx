@@ -89,12 +89,15 @@ export function PdfReader({ book, initialPage, onBack, onPageChange }: Props) {
       const base = pg.getViewport({ scale: 1 });
       const scale = Math.min(360 / base.width, 540 / base.height);
       const vp = pg.getViewport({ scale });
+      // Viewport dims are fractional; round before they reach the DB / Tauri.
+      const w = Math.round(vp.width);
+      const h = Math.round(vp.height);
       const c = document.createElement("canvas");
-      c.width = vp.width;
-      c.height = vp.height;
+      c.width = w;
+      c.height = h;
       await pg.render({ canvasContext: c.getContext("2d")!, viewport: vp }).promise;
       const data = c.toDataURL("image/jpeg", 0.8).split(",")[1];
-      await setCover(book.path, data, vp.width, vp.height);
+      await setCover(book.path, data, w, h);
     } catch {
       /* cover is best-effort */
     }

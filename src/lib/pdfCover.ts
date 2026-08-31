@@ -19,10 +19,14 @@ export async function generatePdfCover(path: string): Promise<string | null> {
     const base = pg.getViewport({ scale: 1 });
     const scale = Math.min(360 / base.width, 540 / base.height);
     const vp = pg.getViewport({ scale });
+    // pdf.js viewport dimensions are fractional; the DB (and Tauri command) want
+    // integers, so round before they leave this function.
+    const w = Math.round(vp.width);
+    const h = Math.round(vp.height);
 
     const canvas = document.createElement("canvas");
-    canvas.width = vp.width;
-    canvas.height = vp.height;
+    canvas.width = w;
+    canvas.height = h;
     await pg.render({
       canvas,
       canvasContext: canvas.getContext("2d")!,
@@ -30,7 +34,7 @@ export async function generatePdfCover(path: string): Promise<string | null> {
     }).promise;
 
     const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
-    await setCover(path, dataUrl.split(",")[1], vp.width, vp.height);
+    await setCover(path, dataUrl.split(",")[1], w, h);
     return dataUrl;
   } catch {
     return null;

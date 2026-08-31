@@ -221,8 +221,19 @@ fn decode_cp1252(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// Extract the book's HTML content (decompressed, images inlined as data URIs).
-pub fn content(path: &str) -> Result<String, String> {
+/// A MOBI file with its text records decompressed into one `text` blob.
+struct Loaded {
+    data: Vec<u8>,
+    offs: Vec<usize>,
+    text: Vec<u8>,
+    first_image: usize,
+    is_kf8: bool,
+    encoding: u32,
+}
+
+/// Parse the PalmDB container and decompress records `1..text_recs` (PalmDOC,
+/// HUFF/CDIC, or stored). Surfaces DRM / unsupported-compression as user errors.
+fn load(path: &str) -> Result<Loaded, String> {
     let data = std::fs::read(path).map_err(|e| e.to_string())?;
     let nrec = u16be(&data, 76).ok_or("bad MOBI")? as usize;
     let mut offs: Vec<usize> = Vec::with_capacity(nrec + 1);
@@ -237,20 +248,15 @@ pub fn content(path: &str) -> Result<String, String> {
     if r0.len() < 132 || &r0[16..20] != b"MOBI" {
         return Err("not a MOBI file".into());
     }
-    // Encryption flag in the PalmDOC header (0 = none, 1/2 = DRM). We don't and
-    // won't decrypt — surface a clear message instead.
     if u16be(r0, 12).unwrap_or(0) != 0 {
         return Err("This book is DRM-protected — Readaity can only open DRM-free files.".into());
     }
     let comp = u16be(r0, 0).unwrap_or(1);
-    if comp == 17480 {
-        return Err("This book uses HUFF/CDIC compression, which isn't supported yet.".into());
-    }
+    let is_kf8 = u32be(r0, 36).unwrap_or(6) >= 8;
     let text_recs = u16be(r0, 8).unwrap_or(0) as usize;
     let encoding = u32be(r0, 28).unwrap_or(1252);
     let mhl = u32be(r0, 20).unwrap_or(0) as usize;
     let first_image = u32be(r0, 108).unwrap_or(0) as usize;
-    // extra_data_flags is at record-0 offset 242 (0xF2), present when hdr ≥ 0xE4.
     let edf = if mhl >= 0xE4 && r0.len() >= 244 {
         u16be(r0, 242).unwrap_or(0)
     } else {
@@ -259,15 +265,41 @@ pub fn content(path: &str) -> Result<String, String> {
     let trailers = (edf >> 1).count_ones();
     let multibyte = edf & 1 != 0;
 
+    let mut huff = if comp == 17480 {
+        let ho = u32be(r0, 112).unwrap_or(0) as usize;
+        let hc = u32be(r0, 116).unwrap_or(0) as usize;
+        if ho == 0 || hc == 0 || ho + hc >= offs.len() {
+            return Err("This book uses HUFF/CDIC compression but its tables are missing.".into());
+        }
+        let huff_rec = &data[offs[ho].min(data.len())..offs[ho + 1].min(data.len())];
+        let cdics: Vec<&[u8]> = (1..hc)
+            .map(|k| &data[offs[ho + k].min(data.len())..offs[ho + k + 1].min(data.len())])
+            .collect();
+        Some(HuffCdic::new(huff_rec, &cdics)?)
+    } else {
+        None
+    };
+
     let last = text_recs.min(offs.len().saturating_sub(2));
-    let mut body: Vec<u8> = Vec::new();
+    let mut text: Vec<u8> = Vec::new();
     for i in 1..=last {
         let rec = trim(&data[offs[i]..offs[i + 1]], trailers, multibyte);
-        if comp == 2 {
-            body.extend_from_slice(&palmdoc(rec));
-        } else {
-            body.extend_from_slice(rec);
+        match comp {
+            2 => text.extend_from_slice(&palmdoc(rec)),
+            17480 => text.extend_from_slice(&huff.as_mut().unwrap().unpack(rec)),
+            _ => text.extend_from_slice(rec),
         }
+    }
+    Ok(Loaded { data, offs, text, first_image, is_kf8, encoding })
+}
+
+/// Extract the book's HTML content (decompressed, images inlined as data URIs).
+pub fn content(path: &str) -> Result<String, String> {
+    let Loaded { data, offs, text: body, first_image, is_kf8, encoding } = load(path)?;
+    let r0 = &data[offs[0].min(data.len())..offs[1].min(data.len())];
+
+    if is_kf8 {
+        return kf8::assemble(&body, &data, &offs, r0, first_image);
     }
 
     let html = if encoding == 65001 {
@@ -276,4 +308,707 @@ pub fn content(path: &str) -> Result<String, String> {
         decode_cp1252(&body)
     };
     Ok(inline_images(&data, &offs, first_image, &html))
+}
+
+/// Layout hints from a MOBI/KF8's EXTH metadata.
+#[derive(Default, Debug, Clone)]
+pub struct Meta {
+    /// EXTH 122 `fixed-layout` == "true" — a page-per-section image book
+    /// (comic, manga, picture book) rather than reflowable text.
+    pub fixed_layout: bool,
+    /// EXTH 123 `book-type` — e.g. "comic", "children".
+    pub book_type: Option<String>,
+}
+
+/// Read the EXTH layout hints from record 0. Never errors — absent = default.
+pub fn meta(path: &str) -> Meta {
+    let mut m = Meta::default();
+    let Ok(data) = std::fs::read(path) else { return m };
+    let Some(nrec) = u16be(&data, 76) else { return m };
+    let Some(o0) = u32be(&data, 78).map(|v| v as usize) else { return m };
+    let o1 = u32be(&data, 86).map(|v| v as usize).unwrap_or(data.len());
+    let r0 = &data[o0.min(data.len())..o1.min(data.len())];
+    if r0.len() < 132 || &r0[16..20] != b"MOBI" || nrec == 0 {
+        return m;
+    }
+    let mhl = u32be(r0, 20).unwrap_or(0) as usize;
+    let exth = 16 + mhl;
+    if r0.get(exth..exth + 4) != Some(b"EXTH") {
+        return m;
+    }
+    let cnt = u32be(r0, exth + 8).unwrap_or(0) as usize;
+    let mut p = exth + 12;
+    for _ in 0..cnt {
+        let Some(typ) = u32be(r0, p) else { break };
+        let Some(len) = u32be(r0, p + 4).map(|v| v as usize) else { break };
+        if len < 8 || p + len > r0.len() {
+            break;
+        }
+        let val = &r0[p + 8..p + len];
+        match typ {
+            122 => m.fixed_layout = val.iter().all(|&b| b != 0) && val == b"true",
+            123 => {
+                m.book_type =
+                    Some(String::from_utf8_lossy(val).trim_matches('\0').to_string())
+            }
+            _ => {}
+        }
+        p += len;
+    }
+    m
+}
+
+/// The page images of a fixed-layout KF8 book, in reading order, as
+/// `(mime, bytes)`. Empty when the book isn't fixed-layout KF8 or can't be
+/// reassembled.
+pub fn page_images(path: &str) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let Loaded { data, offs, text, first_image, is_kf8, .. } = load(path)?;
+    if !is_kf8 {
+        return Ok(Vec::new());
+    }
+    let r0 = &data[offs[0].min(data.len())..offs[1].min(data.len())];
+    let records = kf8::page_image_records(&text, &data, &offs, r0, first_image);
+    let mut out = Vec::with_capacity(records.len());
+    for rec in records {
+        let Some(r) = rec else { continue };
+        let img = &data[offs[r].min(data.len())..offs[r + 1].min(data.len())];
+        if img.len() < 4 || !(img.starts_with(&[0xFF, 0xD8]) || img.starts_with(b"\x89PNG") || img.starts_with(b"GIF")) {
+            continue;
+        }
+        out.push((sniff_mime(img).to_string(), img.to_vec()));
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    /// Reassemble a real KF8-only file when READAITY_KF8_FILE points at one.
+    /// Ignored by default (no fixture is checked in). Run with, e.g.:
+    ///   READAITY_KF8_FILE=/path/book.azw3 cargo test kf8_real -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn kf8_real() {
+        let path = std::env::var("READAITY_KF8_FILE").expect("set READAITY_KF8_FILE");
+        let html = super::content(&path).expect("KF8 content");
+        assert!(html.contains("<body"), "has a body");
+        assert!(
+            !html.contains('\u{FFFD}'),
+            "no UTF-8 replacement chars in output"
+        );
+        assert!(
+            !html.contains("kindle:embed"),
+            "all embedded images inlined"
+        );
+        assert!(
+            html.contains("kf8-section"),
+            "sections were assembled"
+        );
+        eprintln!("KF8 output: {} bytes, {} sections", html.len(), html.matches("kf8-section").count());
+    }
+
+    /// Batch-run `content()` over every .azw3/.mobi in READAITY_KF8_DIR and print
+    /// a one-line health report per file. Writes each rebuilt HTML next to a
+    /// `_out/` dir for eyeballing. Never asserts — it's a survey.
+    #[test]
+    #[ignore]
+    fn kf8_dir() {
+        let dir = std::env::var("READAITY_KF8_DIR").expect("set READAITY_KF8_DIR");
+        let out = std::path::Path::new(&dir).join("_out");
+        let _ = std::fs::create_dir_all(&out);
+        let mut entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                matches!(
+                    p.extension().and_then(|x| x.to_str()).map(|s| s.to_lowercase()).as_deref(),
+                    Some("azw3") | Some("azw") | Some("mobi") | Some("prc")
+                )
+            })
+            .collect();
+        entries.sort();
+        for p in entries {
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            let bytes = std::fs::read(&p).unwrap();
+            let ver = super::u32be(
+                &bytes[super::u32be(&bytes, 78).unwrap_or(0) as usize + 16..],
+                20,
+            );
+            match super::content(&p.to_string_lossy()) {
+                Ok(html) => {
+                    let repl = html.matches('\u{FFFD}').count();
+                    let secs = html.matches("kf8-section").count();
+                    let leftover = html.matches("kindle:embed").count();
+                    let imgs = html.matches("data:image").count();
+                    eprintln!(
+                        "OK   v{:?} {:>8}B sec={:<3} img={:<3} repl={} embedleft={}  {}",
+                        ver, html.len(), secs, imgs, repl, leftover, name
+                    );
+                    let stem = p.file_stem().unwrap().to_string_lossy();
+                    let _ = std::fs::write(out.join(format!("{stem}.html")), &html);
+                }
+                Err(e) => eprintln!("ERR  v{ver:?}  {name}  -> {e}"),
+            }
+        }
+    }
+
+    /// Report fixed-layout detection + page-image extraction over READAITY_KF8_DIR.
+    #[test]
+    #[ignore]
+    fn kf8_pages_dir() {
+        let dir = std::env::var("READAITY_KF8_DIR").expect("set READAITY_KF8_DIR");
+        let mut entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension().and_then(|x| x.to_str()) == Some("azw3")
+            })
+            .collect();
+        entries.sort();
+        for p in entries {
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            let m = super::meta(&p.to_string_lossy());
+            if !m.fixed_layout {
+                continue;
+            }
+            match super::page_images(&p.to_string_lossy()) {
+                Ok(pages) => eprintln!(
+                    "FL  book_type={:<9} pages={:<3}  {}",
+                    m.book_type.as_deref().unwrap_or("-"),
+                    pages.len(),
+                    name
+                ),
+                Err(e) => eprintln!("FL  ERR {e}  {name}"),
+            }
+        }
+    }
+}
+
+// ---------- HUFF/CDIC decompression ----------
+//
+// A compression scheme Amazon's kindlegen applies to most commercial MOBI/KF8
+// books (nothing to do with DRM). One HUFF record holds the Huffman dispatch
+// tables; the CDIC records hold a phrase dictionary. Symbols decode either to a
+// literal byte run or to a dictionary phrase that is itself HUFF/CDIC-coded.
+
+struct HuffCdic {
+    dict1: Vec<u32>,
+    mincode: [u64; 33],
+    maxcode: [u64; 33],
+    /// (bytes, already-expanded?) — non-terminal phrases are expanded on first use.
+    dictionary: Vec<(Vec<u8>, bool)>,
+}
+
+impl HuffCdic {
+    fn new(huff: &[u8], cdics: &[&[u8]]) -> Result<Self, String> {
+        if huff.get(0..4) != Some(b"HUFF") {
+            return Err("HUFF/CDIC: bad HUFF record".into());
+        }
+        let off1 = u32be(huff, 8).ok_or("HUFF/CDIC: short HUFF")? as usize;
+        let off2 = u32be(huff, 12).ok_or("HUFF/CDIC: short HUFF")? as usize;
+        let dict1: Vec<u32> = (0..256)
+            .map(|i| u32be(huff, off1 + i * 4).unwrap_or(0))
+            .collect();
+        let mut mincode = [0u64; 33];
+        let mut maxcode = [0u64; 33];
+        for codelen in 1..=32usize {
+            let mn = u32be(huff, off2 + (codelen - 1) * 8).unwrap_or(0) as u64;
+            let mx = u32be(huff, off2 + (codelen - 1) * 8 + 4).unwrap_or(0) as u64;
+            mincode[codelen] = mn << (32 - codelen);
+            maxcode[codelen] = ((mx + 1) << (32 - codelen)).wrapping_sub(1);
+        }
+
+        let mut dictionary: Vec<(Vec<u8>, bool)> = Vec::new();
+        for cdic in cdics {
+            if cdic.get(0..4) != Some(b"CDIC") {
+                return Err("HUFF/CDIC: bad CDIC record".into());
+            }
+            let phrases = u32be(cdic, 8).unwrap_or(0) as usize;
+            let bits = u32be(cdic, 12).unwrap_or(0) as usize;
+            let n = (1usize << bits).min(phrases.saturating_sub(dictionary.len()));
+            for j in 0..n {
+                let off = match u16be(cdic, 16 + j * 2) {
+                    Some(o) => o as usize,
+                    None => break,
+                };
+                let blen = u16be(cdic, 16 + off).unwrap_or(0) as usize;
+                let slen = blen & 0x7fff;
+                let term = blen & 0x8000 != 0;
+                let s = cdic
+                    .get(16 + off + 2..16 + off + 2 + slen)
+                    .unwrap_or_default()
+                    .to_vec();
+                dictionary.push((s, term));
+            }
+        }
+        Ok(Self { dict1, mincode, maxcode, dictionary })
+    }
+
+    fn phrase(&mut self, r: usize) -> Vec<u8> {
+        let (bytes, expanded) = &self.dictionary[r];
+        if *expanded {
+            return bytes.clone();
+        }
+        let coded = bytes.clone();
+        let out = self.unpack(&coded);
+        self.dictionary[r] = (out.clone(), true);
+        out
+    }
+
+    fn unpack(&mut self, data: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(data.len() + 8);
+        buf.extend_from_slice(data);
+        buf.extend_from_slice(&[0u8; 8]);
+        let total_bits = data.len() * 8;
+        let mut out = Vec::new();
+        let mut pos = 0usize;
+        while pos < total_bits {
+            let bo = pos >> 3;
+            let mut x = u64::from_be_bytes(buf[bo..bo + 8].try_into().unwrap());
+            x <<= (pos & 7) as u32;
+            let code = x >> 32; // top 32 bits, left-aligned
+            let v = self.dict1[(code >> 24) as usize];
+            let mut codelen = (v & 0x1f) as usize;
+            let term = v & 0x80 != 0;
+            let mut mc = if codelen != 0 {
+                (((v >> 8) as u64 + 1) << (32 - codelen)).wrapping_sub(1)
+            } else {
+                0
+            };
+            if !term {
+                if codelen == 0 {
+                    codelen = 1;
+                }
+                while codelen < 33 && code < self.mincode[codelen] {
+                    codelen += 1;
+                }
+                if codelen >= 33 {
+                    break;
+                }
+                mc = self.maxcode[codelen];
+            }
+            pos += codelen;
+            if pos > total_bits {
+                break;
+            }
+            let r = ((mc.wrapping_sub(code)) >> (32 - codelen)) as usize;
+            if r >= self.dictionary.len() {
+                break;
+            }
+            out.extend_from_slice(&self.phrase(r));
+        }
+        out
+    }
+}
+
+// ---------- KF8 (MOBI-8) reassembly ----------
+
+mod kf8 {
+    use super::{sniff_mime, u32be};
+    use base64::Engine as _;
+    use std::collections::BTreeMap;
+    use std::sync::OnceLock;
+
+    use regex::Regex;
+
+    /// One INDX entry: its name plus the decoded values for each TAGX tag.
+    type Entry = (String, BTreeMap<u8, Vec<u32>>);
+
+    /// Forward MOBI varint: bytes are big-endian 7-bit groups, the byte with the
+    /// high bit set terminates. Returns (value, bytes_consumed).
+    fn varint(b: &[u8], mut p: usize) -> (u32, usize) {
+        let mut v: u32 = 0;
+        loop {
+            let Some(&byte) = b.get(p) else { return (v, p) };
+            p += 1;
+            v = (v << 7) | (byte & 0x7f) as u32;
+            if byte & 0x80 != 0 {
+                return (v, p);
+            }
+        }
+    }
+
+    /// Parse an INDX (index) block group starting at record `idx`: a header
+    /// record, `count` data records, then CNCX records we don't need here.
+    fn parse_indx(data: &[u8], offs: &[usize], idx: usize) -> Result<Vec<Entry>, String> {
+        let rec = |i: usize| -> &[u8] {
+            match (offs.get(i), offs.get(i + 1)) {
+                (Some(&a), Some(&b)) => &data[a.min(data.len())..b.min(data.len())],
+                _ => &[],
+            }
+        };
+        let hdr = rec(idx);
+        if hdr.get(0..4) != Some(b"INDX") {
+            return Err("KF8: bad INDX header".into());
+        }
+        let nblocks = u32be(hdr, 0x18).unwrap_or(0) as usize;
+
+        // TAGX table: tag, values-per-entry, bitmask, end-flag (4 bytes each).
+        let tagx_off = hdr
+            .windows(4)
+            .position(|w| w == b"TAGX")
+            .ok_or("KF8: no TAGX")?;
+        let tagx = &hdr[tagx_off..];
+        let tagx_len = u32be(tagx, 4).unwrap_or(0) as usize;
+        let ncontrol = u32be(tagx, 8).unwrap_or(1).max(1) as usize;
+        let mut tags: Vec<(u8, u8, u8, u8)> = Vec::new();
+        let mut i = 12;
+        while i + 4 <= tagx_len.min(tagx.len()) {
+            tags.push((tagx[i], tagx[i + 1], tagx[i + 2], tagx[i + 3]));
+            i += 4;
+        }
+
+        let mut out: Vec<Entry> = Vec::new();
+        for blk in 0..nblocks {
+            let db = rec(idx + 1 + blk);
+            if db.get(0..4) != Some(b"INDX") {
+                return Err("KF8: bad INDX data block".into());
+            }
+            let idxt_pos = u32be(db, 0x14).unwrap_or(0) as usize;
+            let nentries = u32be(db, 0x18).unwrap_or(0) as usize;
+
+            // IDXT: "IDXT" marker then one u16 offset per entry.
+            let mut ends: Vec<usize> = Vec::with_capacity(nentries + 1);
+            for e in 0..nentries {
+                let o = idxt_pos + 4 + e * 2;
+                let Some(s) = db.get(o..o + 2) else { break };
+                ends.push(u16::from_be_bytes([s[0], s[1]]) as usize);
+            }
+            ends.push(idxt_pos);
+
+            for w in ends.windows(2) {
+                let (start, end) = (w[0], w[1].min(db.len()));
+                if start >= end {
+                    continue;
+                }
+                let entry = &db[start..end];
+                let nlen = entry[0] as usize;
+                if 1 + nlen > entry.len() {
+                    continue;
+                }
+                let name = String::from_utf8_lossy(&entry[1..1 + nlen]).into_owned();
+                let mut p = 1 + nlen;
+                let control = &entry[p..(p + ncontrol).min(entry.len())];
+                p += ncontrol;
+                let cbyte = control.first().copied().unwrap_or(0);
+
+                // How many values each present tag carries.
+                let mut plan: Vec<(u8, usize)> = Vec::new();
+                let mut cb_idx = 0usize;
+                for &(tag, nvals, mask, endflag) in &tags {
+                    if endflag & 1 != 0 {
+                        cb_idx += 1;
+                        continue;
+                    }
+                    let byte = control.get(cb_idx).copied().unwrap_or(cbyte);
+                    let mut value = (byte & mask) as u32;
+                    if value == 0 {
+                        continue;
+                    }
+                    let count = if value == mask as u32 {
+                        if (mask as u32).count_ones() > 1 {
+                            let (c, np) = varint(entry, p);
+                            p = np;
+                            c as usize
+                        } else {
+                            1
+                        }
+                    } else {
+                        let mut m = mask;
+                        while m & 1 == 0 {
+                            m >>= 1;
+                            value >>= 1;
+                        }
+                        value as usize
+                    };
+                    plan.push((tag, count * nvals as usize));
+                }
+
+                let mut vals: BTreeMap<u8, Vec<u32>> = BTreeMap::new();
+                for (tag, total) in plan {
+                    let mut got = Vec::with_capacity(total);
+                    for _ in 0..total {
+                        let (v, np) = varint(entry, p);
+                        p = np;
+                        got.push(v);
+                    }
+                    vals.entry(tag).or_default().extend(got);
+                }
+                out.push((name, vals));
+            }
+        }
+        Ok(out)
+    }
+
+    /// A reassembled KF8 book: each section's full XHTML, plus the non-text flows
+    /// (CSS / SVG) as UTF-8-lossy strings.
+    pub struct Book {
+        pub sections: Vec<String>,
+        pub flows: Vec<String>,
+    }
+
+    /// Splice text fragments into their XHTML skeletons. `None` when the
+    /// skeleton/fragment tables are missing or unusable.
+    pub fn reassemble(raw: &[u8], data: &[u8], offs: &[usize], r0: &[u8]) -> Option<Book> {
+        let nrec = offs.len().saturating_sub(1);
+        let rec = |i: usize| -> &[u8] {
+            if i >= nrec {
+                return &[];
+            }
+            &data[offs[i].min(data.len())..offs[i + 1].min(data.len())]
+        };
+        let opt_rec = |v: Option<u32>| -> usize {
+            match v {
+                Some(n) if (n as usize) < nrec => n as usize,
+                _ => usize::MAX,
+            }
+        };
+
+        // FDST splits `raw` into flows: flow 0 = skeleton+fragment text, the rest
+        // are CSS / SVG referenced as `kindle:flow:NNNN`.
+        let fdst = rec(opt_rec(u32be(r0, 0xC0)));
+        let mut flow_spans: Vec<(usize, usize)> = Vec::new();
+        if fdst.get(0..4) == Some(b"FDST") {
+            let n_flows = u32be(fdst, 8).unwrap_or(0) as usize;
+            for k in 0..n_flows {
+                let a = u32be(fdst, 12 + k * 8).unwrap_or(0) as usize;
+                let b = u32be(fdst, 16 + k * 8).unwrap_or(0) as usize;
+                flow_spans.push((a.min(raw.len()), b.min(raw.len())));
+            }
+        }
+        if flow_spans.is_empty() {
+            flow_spans.push((0, raw.len()));
+        }
+        let text0 = &raw[flow_spans[0].0..flow_spans[0].1];
+        let flows: Vec<String> = flow_spans
+            .iter()
+            .skip(1)
+            .map(|&(a, b)| String::from_utf8_lossy(&raw[a..b]).into_owned())
+            .collect();
+
+        let skel_idx = opt_rec(u32be(r0, 0xFC));
+        let frag_idx = opt_rec(u32be(r0, 0xF8));
+        if skel_idx == usize::MAX || frag_idx == usize::MAX {
+            return None;
+        }
+        let (skels, frags) = match (
+            parse_indx(data, offs, skel_idx),
+            parse_indx(data, offs, frag_idx),
+        ) {
+            (Ok(s), Ok(f)) if !s.is_empty() => (s, f),
+            _ => return None,
+        };
+
+        let mut sections = Vec::with_capacity(skels.len());
+        let mut fp = 0usize;
+        for (_, sv) in &skels {
+            let nchunks = sv.get(&1).and_then(|v| v.first()).copied().unwrap_or(0) as usize;
+            let geom = sv.get(&6).cloned().unwrap_or_default();
+            let (sstart, slen) = (
+                *geom.first().unwrap_or(&0) as usize,
+                *geom.get(1).unwrap_or(&0) as usize,
+            );
+            let mut file: Vec<u8> = text0
+                .get(sstart..(sstart + slen).min(text0.len()))
+                .unwrap_or_default()
+                .to_vec();
+            let mut base = sstart + slen;
+            for _ in 0..nchunks {
+                let Some((cname, cv)) = frags.get(fp) else { break };
+                fp += 1;
+                let insert = cname.parse::<usize>().unwrap_or(base);
+                let clen = cv.get(&6).and_then(|v| v.get(1)).copied().unwrap_or(0) as usize;
+                let chunk = text0.get(base..(base + clen).min(text0.len())).unwrap_or_default();
+                base += clen;
+                let at = insert.saturating_sub(sstart).min(file.len());
+                file.splice(at..at, chunk.iter().copied());
+            }
+            sections.push(String::from_utf8_lossy(&file).into_owned());
+        }
+        Some(Book { sections, flows })
+    }
+
+    /// Rebuild a KF8 book into one HTML document: concatenate every section's
+    /// body, inline the CSS flows and the embedded images.
+    pub fn assemble(
+        raw: &[u8],
+        data: &[u8],
+        offs: &[usize],
+        r0: &[u8],
+        first_image: usize,
+    ) -> Result<String, String> {
+        let Some(book) = reassemble(raw, data, offs, r0) else {
+            // No usable tables — flow 0 of a single-file KF8 book is already XHTML.
+            let text0 = flow0(raw, data, offs, r0);
+            let html = String::from_utf8_lossy(&text0);
+            let mut doc = format!(
+                "<!doctype html><html><head><meta charset=\"utf-8\"></head><body>\n<div class=\"kf8-section\">{}</div>\n</body></html>",
+                body_inner(&html)
+            );
+            doc = inline_kf8_images(data, offs, first_image, &doc);
+            return Ok(strip_kindle_refs(&doc));
+        };
+
+        let mut sections = String::new();
+        for s in &book.sections {
+            sections.push_str("<div class=\"kf8-section\">");
+            sections.push_str(body_inner(s));
+            sections.push_str("</div>\n");
+        }
+        let css = book.flows.join("\n");
+        let mut doc = format!(
+            "<!doctype html><html><head><meta charset=\"utf-8\"><style>\n{css}\n</style></head><body>\n{sections}</body></html>"
+        );
+        doc = inline_kf8_images(data, offs, first_image, &doc);
+        doc = strip_kindle_refs(&doc);
+        Ok(doc)
+    }
+
+    /// Just flow 0 (the skeleton+fragment text stream).
+    fn flow0(raw: &[u8], data: &[u8], offs: &[usize], r0: &[u8]) -> Vec<u8> {
+        let nrec = offs.len().saturating_sub(1);
+        let fdst_no = u32be(r0, 0xC0).map(|n| n as usize).unwrap_or(usize::MAX);
+        if fdst_no < nrec {
+            let fdst = &data[offs[fdst_no].min(data.len())..offs[fdst_no + 1].min(data.len())];
+            if fdst.get(0..4) == Some(b"FDST") {
+                let a = u32be(fdst, 12).unwrap_or(0) as usize;
+                let b = u32be(fdst, 16).unwrap_or(raw.len() as u32) as usize;
+                return raw[a.min(raw.len())..b.min(raw.len())].to_vec();
+            }
+        }
+        raw.to_vec()
+    }
+
+    /// Base-32 (fallback decimal) id used by `kindle:embed:NNNN`.
+    fn embed_id(s: &str) -> Option<u32> {
+        u32::from_str_radix(s, 32).ok().or_else(|| s.parse().ok())
+    }
+
+    /// For a fixed-layout KF8 book, the ordered PalmDB record index of each
+    /// page's image. One entry per section; `None` where no image resolves.
+    pub fn page_image_records(
+        raw: &[u8],
+        data: &[u8],
+        offs: &[usize],
+        r0: &[u8],
+        first_image: usize,
+    ) -> Vec<Option<usize>> {
+        static EMBED: OnceLock<Regex> = OnceLock::new();
+        static FLOWLINK: OnceLock<Regex> = OnceLock::new();
+        static IDS: OnceLock<Regex> = OnceLock::new();
+        let embed_re = EMBED.get_or_init(|| Regex::new(r"kindle:embed:0*([0-9A-Za-z]+)").unwrap());
+        let flow_re = FLOWLINK.get_or_init(|| Regex::new(r"kindle:flow:0*([0-9]+)").unwrap());
+        let id_re = IDS.get_or_init(|| Regex::new(r#"\bid="([^"]+)""#).unwrap());
+
+        let Some(book) = reassemble(raw, data, offs, r0) else {
+            return Vec::new();
+        };
+        let all_css = book.flows.join("\n");
+        let to_rec = |id: u32| -> Option<usize> {
+            let r = first_image.checked_add(id as usize)?.checked_sub(1)?;
+            (r + 1 < offs.len()).then_some(r)
+        };
+
+        // In `css`, the first `kindle:embed` id inside the rule block for
+        // selector `#id` (selector must end there, not be a longer id).
+        let bg_embed = |css: &str, id: &str| -> Option<u32> {
+            let needle = format!("#{id}");
+            let mut from = 0;
+            while let Some(rel) = css[from..].find(&needle) {
+                let pos = from + rel;
+                from = pos + needle.len();
+                let after = &css[from..];
+                if after.starts_with(|c: char| c.is_alphanumeric() || c == '-' || c == '_') {
+                    continue;
+                }
+                let brace = match after.find('{') {
+                    Some(b) => b,
+                    None => continue,
+                };
+                let end = after[brace..].find('}').map(|e| brace + e).unwrap_or(after.len());
+                if let Some(c) = embed_re.captures(&after[brace..end]) {
+                    if let Some(v) = embed_id(&c[1]) {
+                        return Some(v);
+                    }
+                }
+            }
+            None
+        };
+
+        book.sections
+            .iter()
+            .map(|sec| {
+                let head = &sec[..sec.find("</head>").unwrap_or(sec.len())];
+                let body = body_inner(sec);
+                let linked: String = flow_re
+                    .captures_iter(head)
+                    .filter_map(|c| c[1].parse::<usize>().ok())
+                    .filter_map(|n| book.flows.get(n))
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+
+                for css in [linked.as_str(), all_css.as_str()] {
+                    for cap in id_re.captures_iter(body) {
+                        if let Some(v) = bg_embed(css, &cap[1]) {
+                            return to_rec(v);
+                        }
+                    }
+                }
+                embed_re
+                    .captures(body)
+                    .and_then(|c| embed_id(&c[1]))
+                    .and_then(to_rec)
+            })
+            .collect()
+    }
+
+    /// Inner HTML of a `<body>…</body>`, or the whole string if there's no body.
+    fn body_inner(html: &str) -> &str {
+        let Some(open) = html.find("<body") else { return html };
+        let Some(gt) = html[open..].find('>') else { return html };
+        let start = open + gt + 1;
+        match html[start..].rfind("</body>") {
+            Some(end) => &html[start..start + end],
+            None => &html[start..],
+        }
+    }
+
+    /// `kindle:embed:NNNN?mime=…` → data URI from the image record.
+    fn inline_kf8_images(data: &[u8], offs: &[usize], first_image: usize, html: &str) -> String {
+        static RE: OnceLock<Regex> = OnceLock::new();
+        let re = RE.get_or_init(|| {
+            Regex::new(r#"kindle:embed:0*([0-9A-Za-z]+)(\?mime=[^"'\s)]*)?"#).unwrap()
+        });
+        re.replace_all(html, |c: &regex::Captures| {
+            // The id is base-32 in some files but plain decimal in practice here.
+            let n = u32::from_str_radix(&c[1], 32).or_else(|_| c[1].parse::<u32>()).unwrap_or(0) as usize;
+            if n == 0 || first_image == 0 {
+                return String::new();
+            }
+            let r = first_image + n - 1;
+            if r + 1 >= offs.len() {
+                return String::new();
+            }
+            let img = &data[offs[r].min(data.len())..offs[r + 1].min(data.len())];
+            format!(
+                "data:{};base64,{}",
+                sniff_mime(img),
+                base64::engine::general_purpose::STANDARD.encode(img)
+            )
+        })
+        .into_owned()
+    }
+
+    /// Neutralise leftover `kindle:` URIs (internal position links, flow links)
+    /// so they don't render as broken links in the single-document reader.
+    fn strip_kindle_refs(html: &str) -> String {
+        static LINK: OnceLock<Regex> = OnceLock::new();
+        static HREF: OnceLock<Regex> = OnceLock::new();
+        let link = LINK.get_or_init(|| Regex::new(r#"<link[^>]*kindle:[^>]*>"#).unwrap());
+        let href = HREF.get_or_init(|| Regex::new(r#"(href|src)="kindle:[^"]*""#).unwrap());
+        let s = link.replace_all(html, "");
+        href.replace_all(&s, r##"$1="#""##).into_owned()
+    }
 }

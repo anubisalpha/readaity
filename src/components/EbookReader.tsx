@@ -3,6 +3,7 @@ import { PdfReader } from "./PdfReader";
 import { EpubReader } from "./EpubReader";
 import { HtmlReader } from "./HtmlReader";
 import { TxtReader } from "./TxtReader";
+import { Reader } from "./Reader";
 import { getMobiHtml, getRtfHtml } from "../lib/api";
 
 interface Props {
@@ -81,7 +82,20 @@ export function EbookReader({ book, initialPage, onBack, onPageChange }: Props) 
     );
   }
 
-  // MOBI / PRC / AZW / AZW3 (DRM-free).
+  // Fixed-layout KF8 (comic / manga / picture book) → page-image pager.
+  if (book.fixed_layout) {
+    return (
+      <Reader
+        book={book}
+        initialPage={initialPage}
+        source="kf8"
+        onBack={onBack}
+        onPageChange={onPageChange}
+      />
+    );
+  }
+
+  // MOBI / PRC / AZW / AZW3 (DRM-free), reflowable.
   return (
     <HtmlReader
       book={book}

@@ -61,6 +61,8 @@ export interface BookRow {
   favorite: boolean;
   /** Unix seconds last opened, or null if never / removed from Being Read. */
   last_opened: number | null;
+  /** Fixed-layout KF8 (comic / picture book): read via the page-image pager. */
+  fixed_layout: boolean;
 }
 
 /** One rendered page (from `get_page`). */

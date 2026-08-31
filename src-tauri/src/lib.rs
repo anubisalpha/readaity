@@ -525,6 +525,25 @@ async fn get_page(path: String, index: usize) -> Result<PageData, String> {
         .map_err(|e| e.to_string())?
 }
 
+/// Every page image of a fixed-layout KF8 book (comic / picture book), in
+/// reading order, base64-encoded. One reassembly of the container.
+#[tauri::command]
+async fn get_kf8_pages(path: String) -> Result<Vec<PageData>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        mobi::page_images(&path).map(|pages| {
+            pages
+                .into_iter()
+                .map(|(mime, bytes)| PageData {
+                    mime,
+                    base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+                })
+                .collect()
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Pause the background indexing sweep (resumable; nothing is lost).
 /// Emits the paused status immediately so the UI reacts even if a large book
 /// is still being hashed when the button is clicked.
@@ -643,6 +662,7 @@ fn start_sweep(app: AppHandle) {
                     Ok(Ok(v)) => {
                         let _ = db::set_validated(
                             &conn, &path, v.page_count, &v.md5, &v.cover, v.cover_w, v.cover_h,
+                            v.fixed_layout,
                         );
                     }
                     Ok(Err(e)) => {
@@ -745,6 +765,7 @@ pub fn run() {
             set_cover,
             read_book_bytes,
             get_mobi_html,
+            get_kf8_pages,
             get_rtf_html,
             get_text_content,
             get_page,

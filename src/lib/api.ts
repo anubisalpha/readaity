@@ -208,6 +208,11 @@ export async function getPageUrl(path: string, index: number): Promise<string> {
   return `data:${page.mime};base64,${page.base64}`;
 }
 
+/** Every page image of a fixed-layout KF8 book (comic / picture book). */
+export function getKf8Pages(path: string): Promise<PageData[]> {
+  return invoke<PageData[]>("get_kf8_pages", { path });
+}
+
 /** Read an entire book file as base64 (for epub.js / pdf.js). */
 export function readBookBytes(path: string): Promise<string> {
   return invoke<string>("read_book_bytes", { path });

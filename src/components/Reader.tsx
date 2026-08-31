@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { BookRow } from "../types";
-import { getPageUrl } from "../lib/api";
+import { getPageUrl, getKf8Pages } from "../lib/api";
 
 interface Props {
   book: BookRow;
   initialPage: number;
   onBack: () => void;
   onPageChange: (page: number) => void;
+  /**
+   * Page source. "archive" (default) pulls one page at a time from a CBZ/CBR.
+   * "kf8" reassembles a fixed-layout KF8 book once and pages its images.
+   */
+  source?: "archive" | "kf8";
 }
 
 type FitMode = "width" | "height";
@@ -38,19 +43,51 @@ function endIndex(count: number, spread: boolean): number {
   return last % 2 === 1 ? last : last - 1;
 }
 
-export function Reader({ book, initialPage, onBack, onPageChange }: Props) {
-  const count = book.page_count;
-  const [page, setPage] = useState(clamp(initialPage, count));
+export function Reader({
+  book,
+  initialPage,
+  onBack,
+  onPageChange,
+  source = "archive",
+}: Props) {
+  // Cache of page index → data URL; `tick` forces a re-render when one lands.
+  const cache = useRef<Map<number, string>>(new Map());
+  const [, setTick] = useState(0);
+  // KF8 books are reassembled once up front; count comes from that.
+  const [kf8Count, setKf8Count] = useState<number | null>(null);
+  const [kf8Error, setKf8Error] = useState<string | null>(null);
+
+  const count = source === "kf8" ? (kf8Count ?? book.page_count) : book.page_count;
+  const [page, setPage] = useState(clamp(initialPage, book.page_count));
   const [spread, setSpread] = useState(false);
   const [fit, setFit] = useState<FitMode>("height");
   const [chromeVisible, setChromeVisible] = useState(true);
 
-  // Cache of page index → data URL; `tick` forces a re-render when one lands.
-  const cache = useRef<Map<number, string>>(new Map());
-  const [, setTick] = useState(0);
+  // KF8: fetch every page image once, drop them all into the cache.
+  useEffect(() => {
+    if (source !== "kf8") return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const pages = await getKf8Pages(book.path);
+        if (cancelled) return;
+        pages.forEach((p, i) =>
+          cache.current.set(i, `data:${p.mime};base64,${p.base64}`),
+        );
+        setKf8Count(pages.length);
+        setTick((t) => t + 1);
+      } catch (e) {
+        if (!cancelled) setKf8Error(String(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [book.path, source]);
 
   const ensure = useCallback(
     async (indices: number[]) => {
+      if (source === "kf8") return; // already all cached
       await Promise.all(
         indices.map(async (i) => {
           if (i < 0 || i >= count || cache.current.has(i)) return;
@@ -63,7 +100,7 @@ export function Reader({ book, initialPage, onBack, onPageChange }: Props) {
         }),
       );
     },
-    [book.path, count],
+    [book.path, count, source],
   );
 
   const pages = spreadPages(page, spread, count);
@@ -176,7 +213,12 @@ export function Reader({ book, initialPage, onBack, onPageChange }: Props) {
         </button>
 
         <div className={`pages${pages.length > 1 ? " dual" : ""}`}>
-          {pages.map((i) => {
+          {source === "kf8" && kf8Error ? (
+            <div className="page-loading">Couldn’t open: {kf8Error}</div>
+          ) : source === "kf8" && kf8Count === null ? (
+            <div className="page-loading">Rebuilding pages…</div>
+          ) : (
+          pages.map((i) => {
             const u = cache.current.get(i);
             return u ? (
               <img
@@ -191,7 +233,8 @@ export function Reader({ book, initialPage, onBack, onPageChange }: Props) {
                 Loading…
               </div>
             );
-          })}
+          })
+          )}
         </div>
 
         <button

@@ -16,6 +16,7 @@ use crate::comic;
 use crate::db;
 use crate::ebook;
 use crate::formats;
+use crate::mobi;
 
 /// Long edge (px) of the cached cover thumbnail.
 const COVER_MAX_DIM: u32 = 360;
@@ -369,6 +370,8 @@ pub struct Validated {
     pub cover: Vec<u8>,
     pub cover_w: i64,
     pub cover_h: i64,
+    /// Fixed-layout KF8 (comic / picture book) — read via the page-image pager.
+    pub fixed_layout: bool,
 }
 
 /// Phase 2 for a single book: hash it, count pages, build a cover if we can.
@@ -388,6 +391,7 @@ pub fn validate_one(path: &str, format: &str) -> Result<Validated, String> {
             cover,
             cover_w: cover_w as i64,
             cover_h: cover_h as i64,
+            fixed_layout: false,
         });
     }
 
@@ -398,12 +402,20 @@ pub fn validate_one(path: &str, format: &str) -> Result<Validated, String> {
         Some((c, w, h)) => (c, w as i64, h as i64),
         None => (Vec::new(), 0, 0),
     };
+
+    // Fixed-layout KF8 (comic / manga / picture book): EXTH 122 says so. This is
+    // a cheap record-0 read — the actual page images are only extracted later,
+    // once, when the pager opens the book. Page count stays 0 until then.
+    let fixed_layout = matches!(format, "mobi" | "prc" | "azw" | "azw3")
+        && mobi::meta(path).fixed_layout;
+
     Ok(Validated {
         page_count,
         md5,
         cover,
         cover_w,
         cover_h,
+        fixed_layout,
     })
 }
 
@@ -469,8 +481,10 @@ mod tests {
         assert_eq!(v.page_count, 2);
         assert!(!v.cover.is_empty(), "cover thumbnail should be produced");
         assert_eq!(v.md5.len(), 32, "md5 hex should be 32 chars");
-        db::set_validated(&conn, path, v.page_count, &v.md5, &v.cover, v.cover_w, v.cover_h)
-            .unwrap();
+        db::set_validated(
+            &conn, path, v.page_count, &v.md5, &v.cover, v.cover_w, v.cover_h, v.fixed_layout,
+        )
+        .unwrap();
 
         // Now that it's ready and unchanged, a rescan is a cache hit (0 to sweep).
         assert_eq!(quick_scan(&conn, "comics", &[folder.clone()]).unwrap(), 0);
