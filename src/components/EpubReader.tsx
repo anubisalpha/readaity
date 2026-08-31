@@ -1,12 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import ePub from "epubjs";
-import type { BookRow } from "../types";
+import type { BookRow, ReaderPrefs } from "../types";
 import { readBookBytes } from "../lib/api";
+import { READER_THEMES } from "../lib/readerTheme";
+import { BookmarkPanel, useBookmarks } from "./Bookmarks";
 
 interface Props {
   book: BookRow;
   /** Stored progress in per-mille (0–1000) of the whole book by content length. */
   initialPage: number;
+  prefs: ReaderPrefs;
   onBack: () => void;
   onPageChange: (perMille: number) => void;
 }
@@ -18,18 +21,45 @@ function b64ToBytes(b64: string): Uint8Array {
   return bytes;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function applyTheme(rendition: any, prefs: ReaderPrefs) {
+  const t = READER_THEMES[prefs.theme];
+  rendition.themes.register(prefs.theme, {
+    body: {
+      background: `${t.bg} !important`,
+      color: `${t.fg} !important`,
+      "font-family": "Georgia, serif",
+      "line-height": "1.5",
+    },
+    a: { color: `${t.link} !important` },
+  });
+  rendition.themes.select(prefs.theme);
+  rendition.themes.fontSize(`${Math.round(prefs.fontScale * 100)}%`);
+}
+
 /**
  * EPUB reader (epub.js). Progress is a true percentage of the whole book by
  * content length (via generated "locations"), stored as per-mille in last_page.
  */
-export function EpubReader({ book, initialPage, onBack, onPageChange }: Props) {
+export function EpubReader({
+  book,
+  initialPage,
+  prefs,
+  onBack,
+  onPageChange,
+}: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const renditionRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const bookRef = useRef<any>(null);
   const locReady = useRef(false);
+  const posRef = useRef(Math.max(0, initialPage));
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [pct, setPct] = useState(Math.round(Math.max(0, initialPage) / 10));
+  const [bmOpen, setBmOpen] = useState(false);
+  const { bookmarks, add, remove } = useBookmarks(book.path);
 
   useEffect(() => {
     let cancelled = false;
@@ -41,6 +71,7 @@ export function EpubReader({ book, initialPage, onBack, onPageChange }: Props) {
         const bytes = b64ToBytes(await readBookBytes(book.path));
         if (cancelled || !hostRef.current) return;
         book_ = ePub(bytes.buffer);
+        bookRef.current = book_;
         const rendition = book_.renderTo(hostRef.current, {
           width: "100%",
           height: "100%",
@@ -49,16 +80,7 @@ export function EpubReader({ book, initialPage, onBack, onPageChange }: Props) {
         });
         renditionRef.current = rendition;
 
-        rendition.themes.register("dark", {
-          body: {
-            background: "#14161a !important",
-            color: "#d8dade !important",
-            "font-family": "Georgia, serif",
-            "line-height": "1.5",
-          },
-          a: { color: "#6ea8fe !important" },
-        });
-        rendition.themes.select("dark");
+        applyTheme(rendition, prefs);
 
         // Force aspect-correct cover/image rendering inside each section. SVG
         // covers (common in EPUBs) can't be fixed via CSS — preserveAspectRatio
@@ -94,8 +116,9 @@ export function EpubReader({ book, initialPage, onBack, onPageChange }: Props) {
           if (!locReady.current || !book_.locations.length()) return;
           const p = book_.locations.percentageFromCfi(loc?.start?.cfi);
           if (typeof p === "number") {
+            posRef.current = Math.round(p * 1000);
             setPct(Math.round(p * 100));
-            onPageChange(Math.round(p * 1000)); // per-mille
+            onPageChange(posRef.current); // per-mille
           }
         });
 
@@ -127,9 +150,26 @@ export function EpubReader({ book, initialPage, onBack, onPageChange }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [book.path]);
 
+  // Live theme / font-size change.
+  useEffect(() => {
+    if (renditionRef.current) applyTheme(renditionRef.current, prefs);
+  }, [prefs]);
+
+  const jumpToPerMille = useCallback((perMille: number) => {
+    const b = bookRef.current;
+    const r = renditionRef.current;
+    if (!b || !r || !locReady.current) return;
+    const cfi = b.locations.cfiFromPercentage(perMille / 1000);
+    if (cfi) r.display(cfi);
+  }, []);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const r = renditionRef.current;
+      if (e.key === "b") {
+        setBmOpen((o) => !o);
+        return;
+      }
       if (!r) return;
       if (["ArrowRight", "PageDown", " "].includes(e.key)) {
         e.preventDefault();
@@ -137,11 +177,14 @@ export function EpubReader({ book, initialPage, onBack, onPageChange }: Props) {
       } else if (["ArrowLeft", "PageUp"].includes(e.key)) {
         e.preventDefault();
         r.prev();
-      } else if (e.key === "Escape") onBack();
+      } else if (e.key === "Escape") {
+        if (bmOpen) setBmOpen(false);
+        else onBack();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onBack]);
+  }, [onBack, bmOpen]);
 
   return (
     <div className="reader">
@@ -151,11 +194,31 @@ export function EpubReader({ book, initialPage, onBack, onPageChange }: Props) {
         </button>
         <span className="reader-title">{book.title}</span>
         <div className="reader-controls">
+          <button
+            className={`btn ghost${bmOpen ? " active" : ""}`}
+            onClick={() => setBmOpen((o) => !o)}
+            title="Bookmarks (B)"
+          >
+            🔖 {bookmarks.length || ""}
+          </button>
           <span className="page-counter">{pct}%</span>
         </div>
       </div>
 
       <div className="reader-stage">
+        {bmOpen && (
+          <BookmarkPanel
+            bookmarks={bookmarks}
+            describe={(p) => `${Math.round(p / 10)}%`}
+            onAdd={() => add(posRef.current, "")}
+            onRemove={remove}
+            onJump={(p) => {
+              jumpToPerMille(p);
+              setBmOpen(false);
+            }}
+            onClose={() => setBmOpen(false)}
+          />
+        )}
         <button
           className="nav-arrow left"
           onClick={() => renditionRef.current?.prev()}

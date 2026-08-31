@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { BookRow } from "../types";
 import { getPageUrl } from "../lib/api";
+import { BookmarkPanel, useBookmarks } from "./Bookmarks";
 
 interface Props {
   book: BookRow;
@@ -47,6 +48,8 @@ export function Reader({ book, initialPage, onBack, onPageChange }: Props) {
   const [spread, setSpread] = useState(false);
   const [fit, setFit] = useState<FitMode>("height");
   const [chromeVisible, setChromeVisible] = useState(true);
+  const [bmOpen, setBmOpen] = useState(false);
+  const { bookmarks, add, remove } = useBookmarks(book.path);
 
   const ensure = useCallback(
     async (indices: number[]) => {
@@ -124,6 +127,9 @@ export function Reader({ book, initialPage, onBack, onPageChange }: Props) {
         case "d":
           toggleSpread();
           break;
+        case "b":
+          setBmOpen((o) => !o);
+          break;
       }
     };
     window.addEventListener("keydown", onKey);
@@ -160,11 +166,31 @@ export function Reader({ book, initialPage, onBack, onPageChange }: Props) {
           >
             {fit === "width" ? "Fit height" : "Fit width"}
           </button>
+          <button
+            className={`btn ghost${bmOpen ? " active" : ""}`}
+            onClick={() => setBmOpen((o) => !o)}
+            title="Bookmarks (B)"
+          >
+            🔖 {bookmarks.length || ""}
+          </button>
           <span className="page-counter">{counter}</span>
         </div>
       </div>
 
       <div className="reader-stage">
+        {bmOpen && (
+          <BookmarkPanel
+            bookmarks={bookmarks}
+            describe={(p) => `Page ${p + 1}`}
+            onAdd={() => add(page, "")}
+            onRemove={remove}
+            onJump={(p) => {
+              setPage(clamp(p, count));
+              setBmOpen(false);
+            }}
+            onClose={() => setBmOpen(false)}
+          />
+        )}
         <button
           className="nav-arrow left"
           onClick={() => go(-1)}

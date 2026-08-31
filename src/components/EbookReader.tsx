@@ -1,4 +1,4 @@
-import type { BookRow } from "../types";
+import type { BookRow, ReaderPrefs } from "../types";
 import { PdfReader } from "./PdfReader";
 import { EpubReader } from "./EpubReader";
 import { HtmlReader } from "./HtmlReader";
@@ -9,6 +9,7 @@ import { getMobiHtml, getRtfHtml } from "../lib/api";
 interface Props {
   book: BookRow;
   initialPage: number;
+  prefs: ReaderPrefs;
   onBack: () => void;
   onPageChange: (page: number) => void;
   /** This is a fixed-layout book open in the Ebooks library — nudge to Comics. */
@@ -20,6 +21,7 @@ interface Props {
 export function EbookReader({
   book,
   initialPage,
+  prefs,
   onBack,
   onPageChange,
   suggestComics,
@@ -40,6 +42,7 @@ export function EbookReader({
       <EpubReader
         book={book}
         initialPage={initialPage}
+        prefs={prefs}
         onBack={onBack}
         onPageChange={onPageChange}
       />
@@ -50,6 +53,7 @@ export function EbookReader({
       <TxtReader
         book={book}
         initialPage={initialPage}
+        prefs={prefs}
         onBack={onBack}
         onPageChange={onPageChange}
       />
@@ -61,6 +65,7 @@ export function EbookReader({
         book={book}
         initialPage={initialPage}
         load={getRtfHtml}
+        prefs={prefs}
         onBack={onBack}
         onPageChange={onPageChange}
       />
@@ -112,6 +117,7 @@ export function EbookReader({
       book={book}
       initialPage={initialPage}
       load={getMobiHtml}
+      prefs={prefs}
       onBack={onBack}
       onPageChange={onPageChange}
     />

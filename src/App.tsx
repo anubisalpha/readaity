@@ -6,8 +6,13 @@ import type {
   FolderMode,
   LibraryKind,
   ProbeResult,
+  ReaderPrefs,
   ScanStatus,
 } from "./types";
+import {
+  DEFAULT_READER_PREFS,
+  parseReaderPrefs,
+} from "./lib/readerTheme";
 import {
   addFolder,
   getSetting,
@@ -86,6 +91,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [counts, setCounts] = useState({ comics: 0, ebooks: 0 });
   const [recovered, setRecovered] = useState(false);
+  const [readerPrefs, setReaderPrefs] = useState<ReaderPrefs>(DEFAULT_READER_PREFS);
 
   const refreshCounts = useCallback(() => {
     libraryCounts()
@@ -129,6 +135,19 @@ function App() {
       })
       .catch((e) => console.error("read default library failed", e))
       .finally(() => setBooted(true));
+  }, []);
+
+  // Load the persisted reading-appearance preferences once.
+  useEffect(() => {
+    Promise.all([getSetting("reader_theme"), getSetting("reader_font_scale")])
+      .then(([theme, scale]) => setReaderPrefs(parseReaderPrefs(theme, scale)))
+      .catch((e) => console.error("read reader prefs failed", e));
+  }, []);
+
+  const handleReaderPrefsChange = useCallback((next: ReaderPrefs) => {
+    setReaderPrefs(next);
+    setSetting("reader_theme", next.theme).catch(() => {});
+    setSetting("reader_font_scale", String(next.fontScale)).catch(() => {});
   }, []);
 
   // Load (and reload) the active library's data.
@@ -407,6 +426,8 @@ function App() {
             library={library}
             firstLibrary={firstLibrary}
             onSetFirstLibrary={handleSetFirstLibrary}
+            readerPrefs={readerPrefs}
+            onReaderPrefsChange={handleReaderPrefsChange}
             onClose={() => setSettingsOpen(false)}
             onBooksChanged={(bs) => setBooks(sortBooks(bs))}
           />
@@ -426,6 +447,7 @@ function App() {
             <EbookReader
               book={openBook}
               initialPage={openBook.last_page}
+              prefs={readerPrefs}
               onBack={back}
               onPageChange={handlePageChange}
               suggestComics={openBook.fixed_layout && library === "ebooks"}

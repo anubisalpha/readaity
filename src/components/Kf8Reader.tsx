@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { BookRow } from "../types";
 import { getKf8PageDims, getKf8Page, type Kf8Page } from "../lib/api";
+import { BookmarkPanel, useBookmarks } from "./Bookmarks";
 
 interface Props {
   book: BookRow;
@@ -34,6 +35,8 @@ export function Kf8Reader({
   const [fit, setFit] = useState<FitMode>("page");
   const [chromeVisible, setChromeVisible] = useState(true);
   const [stage, setStage] = useState({ w: 0, h: 0 });
+  const [bmOpen, setBmOpen] = useState(false);
+  const { bookmarks, add, remove } = useBookmarks(book.path);
   const stageRef = useRef<HTMLDivElement>(null);
 
   // page index → html; a tick forces re-render when one lands.
@@ -121,12 +124,15 @@ export function Kf8Reader({
         go(-1);
       } else if (e.key === "Home") setPage(0);
       else if (e.key === "End") setPage(count - 1);
-      else if (e.key === "Escape") onBack();
-      else if (e.key === "f") cycleFit();
+      else if (e.key === "Escape") {
+        if (bmOpen) setBmOpen(false);
+        else onBack();
+      } else if (e.key === "f") cycleFit();
+      else if (e.key === "b") setBmOpen((o) => !o);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [go, count, onBack, cycleFit]);
+  }, [go, count, onBack, cycleFit, bmOpen]);
 
   const scale = useMemo(() => {
     if (!dim || !stage.w || !stage.h) return 1;
@@ -151,6 +157,13 @@ export function Kf8Reader({
             title="Cycle fit: whole page / width / height (F)"
           >
             {fit === "page" ? "Fit page" : fit === "width" ? "Fit width" : "Fit height"}
+          </button>
+          <button
+            className={`btn ghost${bmOpen ? " active" : ""}`}
+            onClick={() => setBmOpen((o) => !o)}
+            title="Bookmarks (B)"
+          >
+            🔖 {bookmarks.length || ""}
           </button>
           <span className="page-counter">
             {count ? `${clamped + 1} / ${count}` : "…"}
@@ -178,6 +191,19 @@ export function Kf8Reader({
       )}
 
       <div className="reader-stage">
+        {bmOpen && (
+          <BookmarkPanel
+            bookmarks={bookmarks}
+            describe={(p) => `Page ${p + 1}`}
+            onAdd={() => add(clamped, "")}
+            onRemove={remove}
+            onJump={(p) => {
+              setPage(Math.min(Math.max(p, 0), Math.max(0, count - 1)));
+              setBmOpen(false);
+            }}
+            onClose={() => setBmOpen(false)}
+          />
+        )}
         <button
           className="nav-arrow left"
           onClick={() => go(-1)}

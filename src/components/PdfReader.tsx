@@ -3,6 +3,7 @@ import * as pdfjsLib from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import type { BookRow } from "../types";
 import { readBookBytes, setCover } from "../lib/api";
+import { BookmarkPanel, useBookmarks } from "./Bookmarks";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -30,6 +31,8 @@ export function PdfReader({ book, initialPage, onBack, onPageChange }: Props) {
   const [fitWidth, setFitWidth] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [bmOpen, setBmOpen] = useState(false);
+  const { bookmarks, add, remove } = useBookmarks(book.path);
 
   // Load the document once.
   useEffect(() => {
@@ -120,6 +123,7 @@ export function PdfReader({ book, initialPage, onBack, onPageChange }: Props) {
       else if (e.key === "End") setPage(numPages - 1);
       else if (e.key === "Escape") onBack();
       else if (e.key === "f") setFitWidth((f) => !f);
+      else if (e.key === "b") setBmOpen((o) => !o);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -140,6 +144,13 @@ export function PdfReader({ book, initialPage, onBack, onPageChange }: Props) {
           >
             {fitWidth ? "Fit height" : "Fit width"}
           </button>
+          <button
+            className={`btn ghost${bmOpen ? " active" : ""}`}
+            onClick={() => setBmOpen((o) => !o)}
+            title="Bookmarks (B)"
+          >
+            🔖 {bookmarks.length || ""}
+          </button>
           <span className="page-counter">
             {numPages ? `${page + 1} / ${numPages}` : "…"}
           </span>
@@ -147,6 +158,19 @@ export function PdfReader({ book, initialPage, onBack, onPageChange }: Props) {
       </div>
 
       <div className="reader-stage">
+        {bmOpen && (
+          <BookmarkPanel
+            bookmarks={bookmarks}
+            describe={(p) => `Page ${p + 1}`}
+            onAdd={() => add(page, "")}
+            onRemove={remove}
+            onJump={(p) => {
+              setPage(Math.min(Math.max(p, 0), Math.max(numPages - 1, 0)));
+              setBmOpen(false);
+            }}
+            onClose={() => setBmOpen(false)}
+          />
+        )}
         <button
           className="nav-arrow left"
           onClick={() => go(-1)}

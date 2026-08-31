@@ -1361,6 +1361,167 @@ textarea.sharing-input {
 .toc-panel li button:hover {
   background: rgba(255, 255, 255, 0.06);
 }
+.toc-panel .toc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* Toggled reader-bar buttons (Contents / Bookmarks open). */
+.reader-bar .btn.ghost.active {
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--text);
+}
+
+/* Bookmarks panel (reuses .toc-panel positioning). */
+.bm-add {
+  margin: 4px 12px 8px;
+}
+.bm-empty {
+  padding: 4px 16px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.bm-row {
+  display: flex;
+  align-items: stretch;
+}
+.bm-jump {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  padding: 8px 8px 8px 16px;
+  cursor: pointer;
+}
+.bm-jump:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.bm-where {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.bm-label {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bm-del {
+  flex: 0 0 auto;
+  align-self: center;
+  margin-right: 8px;
+  opacity: 0.5;
+}
+.bm-del:hover {
+  opacity: 1;
+}
+
+/* Settings → Reading: theme swatches + text-size stepper. */
+.theme-choices {
+  display: flex;
+  gap: 10px;
+}
+.theme-swatch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 88px;
+  padding: 14px 8px 10px;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+}
+.theme-swatch .theme-Aa {
+  font-family: Georgia, serif;
+  font-size: 20px;
+}
+.theme-swatch .theme-name {
+  font-size: 12px;
+  opacity: 0.8;
+}
+.theme-swatch.active {
+  border-color: var(--accent, #2fd3b8);
+  box-shadow: 0 0 0 2px var(--accent, #2fd3b8);
+}
+.fontscale-value {
+  min-width: 52px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Settings → Library health: verify progress + results. */
+.verify-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  margin: 10px 0;
+}
+.verify-bar-fill {
+  height: 100%;
+  background: var(--accent, #2fd3b8);
+  transition: width 0.2s ease;
+}
+.verify-result {
+  margin-top: 14px;
+}
+.verify-summary {
+  font-size: 14px;
+}
+.verify-group {
+  margin-top: 14px;
+}
+.verify-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.verify-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.verify-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 13px;
+}
+.verify-title {
+  flex: 0 0 auto;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.verify-lib {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.verify-dir {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
 
 /* Nudge to move a fixed-layout book into the Comics library. */
 .kf8-nudge {

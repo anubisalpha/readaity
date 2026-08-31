@@ -71,6 +71,39 @@ export interface PageData {
   base64: string;
 }
 
+/** A saved place in a book. `position` matches the reader's `last_page` unit:
+ *  a page index for comic/PDF, per-mille (0–1000) for reflowable formats. */
+export interface Bookmark {
+  id: number;
+  position: number;
+  label: string;
+  created_at: number;
+}
+
+export type ReaderThemeId = "dark" | "light" | "sepia";
+
+/** Reader appearance preferences (persisted in the settings k/v table). */
+export interface ReaderPrefs {
+  theme: ReaderThemeId;
+  /** Font scale multiplier, 0.8–1.6 (1 = default). */
+  fontScale: number;
+}
+
+/** One book in a verify report. */
+export interface VerifyItem {
+  path: string;
+  title: string;
+  library: string;
+}
+
+/** Result of an on-demand library integrity check (`verify-done` event). */
+export interface VerifyReport {
+  checked: number;
+  ok: number;
+  changed: VerifyItem[];
+  missing: VerifyItem[];
+}
+
 /** Global work status for the top progress bar. */
 export interface ScanStatus {
   phase: "idle" | "scanning" | "indexing" | "paused";

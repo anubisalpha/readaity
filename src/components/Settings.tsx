@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import type { BookRow, DupGroup, LibraryKind } from "../types";
+import type {
+  BookRow,
+  DupGroup,
+  LibraryKind,
+  ReaderPrefs,
+  VerifyReport,
+} from "../types";
 import { SharingSettings } from "./SharingSettings";
 import {
   clearExclusions,
@@ -8,20 +14,40 @@ import {
   listExclusions,
   listIgnoredDupes,
   listNameDuplicates,
+  onVerifyDone,
+  onVerifyStatus,
+  recheckBooks,
   removeBook,
   restoreExclusion,
   unignoreDupe,
+  verifyLibrary,
 } from "../lib/api";
+import {
+  clampFontScale,
+  FONT_SCALE_MAX,
+  FONT_SCALE_MIN,
+  FONT_SCALE_STEP,
+  READER_THEMES,
+} from "../lib/readerTheme";
 
 interface Props {
   library: LibraryKind;
   firstLibrary: LibraryKind;
   onSetFirstLibrary: (lib: LibraryKind) => void;
+  readerPrefs: ReaderPrefs;
+  onReaderPrefsChange: (prefs: ReaderPrefs) => void;
   onClose: () => void;
   onBooksChanged: (books: BookRow[]) => void;
 }
 
-type Tab = "general" | "sharing" | "removed" | "exact" | "similar";
+type Tab =
+  | "general"
+  | "reading"
+  | "health"
+  | "sharing"
+  | "removed"
+  | "exact"
+  | "similar";
 
 function splitPath(p: string): { name: string; dir: string } {
   const parts = p.split(/[\\/]/).filter(Boolean);
@@ -38,6 +64,8 @@ export function Settings({
   library,
   firstLibrary,
   onSetFirstLibrary,
+  readerPrefs,
+  onReaderPrefsChange,
   onClose,
   onBooksChanged,
 }: Props) {
@@ -119,6 +147,8 @@ export function Settings({
 
   const NAV: { id: Tab; label: string; count: number }[] = [
     { id: "general", label: "General", count: 0 },
+    { id: "reading", label: "Reading", count: 0 },
+    { id: "health", label: "Library health", count: 0 },
     { id: "sharing", label: "Network sharing", count: 0 },
     { id: "removed", label: "Removed from library", count: exclusions.length },
     { id: "exact", label: "Exact duplicates", count: exact.length },
@@ -153,6 +183,10 @@ export function Settings({
           {tab === "general" && (
             <GeneralTab first={firstLibrary} onSet={onSetFirstLibrary} />
           )}
+          {tab === "reading" && (
+            <ReadingTab prefs={readerPrefs} onChange={onReaderPrefsChange} />
+          )}
+          {tab === "health" && <HealthTab />}
           {tab === "sharing" && <SharingSettings />}
           {tab === "removed" && (
             <RemovedTab
@@ -214,6 +248,217 @@ function GeneralTab({
           ))}
         </div>
       </div>
+    </>
+  );
+}
+
+function ReadingTab({
+  prefs,
+  onChange,
+}: {
+  prefs: ReaderPrefs;
+  onChange: (p: ReaderPrefs) => void;
+}) {
+  const themeIds = Object.keys(READER_THEMES) as (keyof typeof READER_THEMES)[];
+  const pct = Math.round(prefs.fontScale * 100);
+  const step = (dir: number) =>
+    onChange({
+      ...prefs,
+      fontScale: clampFontScale(prefs.fontScale + dir * FONT_SCALE_STEP),
+    });
+  return (
+    <>
+      <p className="settings-hint">
+        Theme and text size for the reflowable readers (EPUB, MOBI / AZW3, TXT,
+        RTF). Comics and PDFs are shown as-is.
+      </p>
+
+      <div className="settings-field">
+        <span className="settings-field-label">Theme</span>
+        <div className="theme-choices">
+          {themeIds.map((id) => {
+            const t = READER_THEMES[id];
+            return (
+              <button
+                key={id}
+                className={`theme-swatch${prefs.theme === id ? " active" : ""}`}
+                style={{ background: t.bg, color: t.fg }}
+                onClick={() => onChange({ ...prefs, theme: id })}
+                aria-pressed={prefs.theme === id}
+              >
+                <span className="theme-Aa">Aa</span>
+                <span className="theme-name">{t.name}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="settings-field">
+        <span className="settings-field-label">Text size</span>
+        <div className="seg">
+          <button
+            className="seg-btn"
+            onClick={() => step(-1)}
+            disabled={prefs.fontScale <= FONT_SCALE_MIN}
+            aria-label="Smaller text"
+          >
+            A−
+          </button>
+          <span className="fontscale-value">{pct}%</span>
+          <button
+            className="seg-btn"
+            onClick={() => step(1)}
+            disabled={prefs.fontScale >= FONT_SCALE_MAX}
+            aria-label="Larger text"
+          >
+            A+
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function HealthTab() {
+  const [phase, setPhase] = useState<"idle" | "running" | "done">("idle");
+  const [progress, setProgress] = useState({ checked: 0, total: 0 });
+  const [report, setReport] = useState<VerifyReport | null>(null);
+  const [requeued, setRequeued] = useState(false);
+
+  useEffect(() => {
+    let offStatus: (() => void) | undefined;
+    let offDone: (() => void) | undefined;
+    (async () => {
+      offStatus = await onVerifyStatus((s) => {
+        setProgress(s);
+        setPhase("running");
+      });
+      offDone = await onVerifyDone((r) => {
+        setReport(r);
+        setPhase("done");
+      });
+    })();
+    return () => {
+      offStatus?.();
+      offDone?.();
+    };
+  }, []);
+
+  const start = async () => {
+    setReport(null);
+    setRequeued(false);
+    setProgress({ checked: 0, total: 0 });
+    const total = await verifyLibrary();
+    if (total === 0) {
+      setPhase("done");
+      setReport({ checked: 0, ok: 0, changed: [], missing: [] });
+    } else {
+      setPhase("running");
+      setProgress({ checked: 0, total });
+    }
+  };
+
+  const reindexChanged = async () => {
+    if (!report) return;
+    await recheckBooks(report.changed.map((c) => c.path));
+    setRequeued(true);
+  };
+
+  const frac =
+    progress.total > 0 ? Math.round((progress.checked / progress.total) * 100) : 0;
+
+  return (
+    <>
+      <p className="settings-hint">
+        Re-hash every indexed book and check it still matches what was recorded.
+        Nothing is changed — this only reports files that were edited, replaced or
+        have gone missing since they were added.
+      </p>
+
+      <div className="settings-row-actions">
+        <button
+          className="btn"
+          onClick={start}
+          disabled={phase === "running"}
+        >
+          {phase === "running" ? "Verifying…" : "Verify library"}
+        </button>
+        {phase === "running" && (
+          <span className="settings-hint">
+            {progress.checked} / {progress.total} ({frac}%)
+          </span>
+        )}
+      </div>
+
+      {phase === "running" && (
+        <div className="verify-bar">
+          <div className="verify-bar-fill" style={{ width: `${frac}%` }} />
+        </div>
+      )}
+
+      {phase === "done" && report && (
+        <div className="verify-result">
+          <p className="verify-summary">
+            Checked {report.checked} book{report.checked === 1 ? "" : "s"} —{" "}
+            <strong>{report.ok} unchanged</strong>
+            {report.changed.length > 0 && (
+              <>, {report.changed.length} changed</>
+            )}
+            {report.missing.length > 0 && (
+              <>, {report.missing.length} missing</>
+            )}
+            .
+          </p>
+
+          {report.changed.length > 0 && (
+            <div className="verify-group">
+              <div className="verify-group-head">
+                <span>Changed on disk</span>
+                <button
+                  className="btn small"
+                  onClick={reindexChanged}
+                  disabled={requeued}
+                >
+                  {requeued ? "Queued for re-index" : "Re-index these"}
+                </button>
+              </div>
+              <ul className="verify-list">
+                {report.changed.map((c) => (
+                  <li key={c.path}>
+                    <span className="verify-title">{c.title}</span>
+                    <span className="verify-lib">{c.library}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {report.missing.length > 0 && (
+            <div className="verify-group">
+              <div className="verify-group-head">
+                <span>Missing / unreadable</span>
+              </div>
+              <ul className="verify-list">
+                {report.missing.map((c) => (
+                  <li key={c.path}>
+                    <span className="verify-title">{c.title}</span>
+                    <span className="verify-dir" title={c.path}>
+                      {c.path}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {report.changed.length === 0 && report.missing.length === 0 && (
+            <p className="settings-empty">
+              Everything checks out — no changed or missing files.
+            </p>
+          )}
+        </div>
+      )}
     </>
   );
 }

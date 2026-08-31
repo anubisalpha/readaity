@@ -109,6 +109,14 @@ pub fn open(db_path: &std::path::Path) -> Result<Connection, String> {
             key       TEXT PRIMARY KEY,
             value     TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS bookmarks (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            book_path  TEXT NOT NULL,
+            position   INTEGER NOT NULL,
+            label      TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_bookmarks_book ON bookmarks(book_path);
         CREATE TABLE IF NOT EXISTS share_audit (
             id        INTEGER PRIMARY KEY AUTOINCREMENT,
             ts        INTEGER NOT NULL,
@@ -402,6 +410,105 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<(), Stri
     Ok(())
 }
 
+// ---------- Bookmarks ----------
+
+/// One saved place in a book. `position` is in the same unit the reader stores
+/// as `last_page`: a page index for comic/PDF, per-mille (0–1000) for reflowable.
+#[derive(Serialize, Clone)]
+pub struct Bookmark {
+    pub id: i64,
+    pub position: i64,
+    pub label: String,
+    pub created_at: i64,
+}
+
+pub fn add_bookmark(
+    conn: &Connection,
+    book_path: &str,
+    position: i64,
+    label: &str,
+) -> Result<Bookmark, String> {
+    let ts = now();
+    conn.execute(
+        "INSERT INTO bookmarks(book_path, position, label, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![book_path, position, label, ts],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(Bookmark {
+        id: conn.last_insert_rowid(),
+        position,
+        label: label.to_string(),
+        created_at: ts,
+    })
+}
+
+pub fn list_bookmarks(conn: &Connection, book_path: &str) -> Result<Vec<Bookmark>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, position, label, created_at FROM bookmarks
+             WHERE book_path = ?1 ORDER BY position, id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![book_path], |r| {
+            Ok(Bookmark {
+                id: r.get(0)?,
+                position: r.get(1)?,
+                label: r.get(2)?,
+                created_at: r.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+pub fn remove_bookmark(conn: &Connection, id: i64) -> Result<(), String> {
+    conn.execute("DELETE FROM bookmarks WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Drop bookmarks whose book is no longer in the library (called after any bulk
+/// book deletion — folder removal, subtree removal, prune).
+pub fn prune_orphan_bookmarks(conn: &Connection) {
+    let _ = conn.execute(
+        "DELETE FROM bookmarks WHERE book_path NOT IN (SELECT path FROM books)",
+        [],
+    );
+}
+
+// ---------- Library integrity check ----------
+
+/// `(path, title, md5, library)` for every ready book that has a stored hash.
+pub fn all_hashed(conn: &Connection) -> Result<Vec<(String, String, String, String)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT path, title, md5, library FROM books
+             WHERE status = 'ready' AND md5 IS NOT NULL ORDER BY title COLLATE NOCASE",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// Reset specific books to `discovered` so the next sweep re-validates them.
+pub fn recheck(conn: &Connection, paths: &[String]) -> Result<(), String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    for p in paths {
+        tx.execute(
+            "UPDATE books SET status = 'discovered', updated_at = ?2 WHERE path = ?1",
+            params![p, now()],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ---------- Share audit log ----------
 
 /// One recorded event from the network-sharing server.
@@ -494,6 +601,8 @@ pub fn remove_book(conn: &Connection, path: &str) -> Result<(), String> {
     add_exclusion(conn, path)?;
     conn.execute("DELETE FROM books WHERE path = ?1", params![path])
         .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM bookmarks WHERE book_path = ?1", params![path])
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -510,6 +619,7 @@ pub fn remove_subtree(conn: &Connection, prefix: &str) -> Result<(), String> {
         params![norm, like],
     )
     .map_err(|e| e.to_string())?;
+    prune_orphan_bookmarks(conn);
     Ok(())
 }
 
@@ -595,6 +705,9 @@ pub fn prune_missing(
                 .map_err(|e| e.to_string())?;
             removed += 1;
         }
+    }
+    if removed > 0 {
+        prune_orphan_bookmarks(conn);
     }
     Ok(removed)
 }
@@ -1195,6 +1308,55 @@ mod shelf_tests {
         clear_opened(&conn, "b.txt").unwrap();
         let ebooks = list_books(&conn, "ebooks").unwrap();
         assert!(ebooks.iter().all(|x| !x.favorite && x.last_opened.is_none()));
+
+        drop(conn);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn bookmarks_round_trip_and_orphan_prune() {
+        let p = tmp("bm");
+        let conn = open(&p).unwrap();
+        seed_book(&conn, "a.txt", "ebooks");
+
+        let b1 = add_bookmark(&conn, "a.txt", 120, "Chapter 3").unwrap();
+        add_bookmark(&conn, "a.txt", 40, "start").unwrap();
+        let list = list_bookmarks(&conn, "a.txt").unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].position, 40, "sorted by position");
+        assert_eq!(list[1].label, "Chapter 3");
+
+        remove_bookmark(&conn, b1.id).unwrap();
+        assert_eq!(list_bookmarks(&conn, "a.txt").unwrap().len(), 1);
+
+        // Orphan prune drops bookmarks whose book no longer exists.
+        conn.execute("DELETE FROM books WHERE path = 'a.txt'", []).unwrap();
+        prune_orphan_bookmarks(&conn);
+        assert_eq!(list_bookmarks(&conn, "a.txt").unwrap().len(), 0);
+
+        drop(conn);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn all_hashed_and_recheck() {
+        let p = tmp("verify");
+        let conn = open(&p).unwrap();
+        seed_book(&conn, "a.txt", "ebooks");
+        seed_book(&conn, "b.cbz", "comics");
+        conn.execute("UPDATE books SET md5 = 'deadbeef' WHERE path = 'a.txt'", [])
+            .unwrap();
+
+        // Only the hashed, ready book is returned.
+        let hashed = all_hashed(&conn).unwrap();
+        assert_eq!(hashed.len(), 1);
+        assert_eq!(hashed[0].0, "a.txt");
+        assert_eq!(hashed[0].2, "deadbeef");
+        assert_eq!(hashed[0].3, "ebooks");
+
+        recheck(&conn, &["a.txt".to_string()]).unwrap();
+        let pending = pending(&conn).unwrap();
+        assert!(pending.iter().any(|(path, _)| path == "a.txt"));
 
         drop(conn);
         let _ = std::fs::remove_file(&p);

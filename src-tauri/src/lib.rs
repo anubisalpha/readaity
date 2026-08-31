@@ -156,6 +156,125 @@ fn set_setting(app: AppHandle, key: String, value: String) -> Result<(), String>
     db::set_setting(&conn, &key, &value)
 }
 
+// ---------- Bookmarks ----------
+
+#[tauri::command]
+fn list_bookmarks(app: AppHandle, path: String) -> Result<Vec<db::Bookmark>, String> {
+    let db = app.state::<AppDb>();
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    db::list_bookmarks(&conn, &path)
+}
+
+#[tauri::command]
+fn add_bookmark(
+    app: AppHandle,
+    path: String,
+    position: i64,
+    label: String,
+) -> Result<db::Bookmark, String> {
+    let db = app.state::<AppDb>();
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    db::add_bookmark(&conn, &path, position, label.trim())
+}
+
+#[tauri::command]
+fn remove_bookmark(app: AppHandle, id: i64) -> Result<(), String> {
+    let db = app.state::<AppDb>();
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    db::remove_bookmark(&conn, id)
+}
+
+// ---------- Library integrity check ----------
+
+/// Guards against two verify passes running at once.
+struct Verifying(AtomicBool);
+
+#[derive(Clone, serde::Serialize)]
+struct VerifyItem {
+    path: String,
+    title: String,
+    library: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct VerifyReport {
+    checked: usize,
+    ok: usize,
+    changed: Vec<VerifyItem>,
+    missing: Vec<VerifyItem>,
+}
+
+/// Re-hash every indexed book and report which files changed or went missing.
+/// Non-destructive: nothing in the DB is modified. Progress arrives as
+/// `verify-status` events; the final `VerifyReport` as `verify-done`.
+/// Returns the number of books that will be checked (0 if a pass is already
+/// running or there is nothing hashed yet).
+#[tauri::command]
+fn verify_library(app: AppHandle) -> Result<usize, String> {
+    if app.state::<Verifying>().0.swap(true, Ordering::SeqCst) {
+        return Ok(0); // already running
+    }
+
+    let items = {
+        let db = app.state::<AppDb>();
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        db::all_hashed(&conn)?
+    };
+    let total = items.len();
+    if total == 0 {
+        app.state::<Verifying>().0.store(false, Ordering::SeqCst);
+        return Ok(0);
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut report = VerifyReport {
+            checked: 0,
+            ok: 0,
+            changed: Vec::new(),
+            missing: Vec::new(),
+        };
+        for (path, title, stored_md5, library) in items {
+            report.checked += 1;
+            let item = VerifyItem {
+                path: path.clone(),
+                title,
+                library,
+            };
+            if !std::path::Path::new(&path).exists() {
+                report.missing.push(item);
+            } else {
+                match library::md5_file(&path) {
+                    Ok(h) if h == stored_md5 => report.ok += 1,
+                    Ok(_) => report.changed.push(item),
+                    Err(_) => report.missing.push(item),
+                }
+            }
+            let _ = app.emit(
+                "verify-status",
+                serde_json::json!({ "checked": report.checked, "total": total }),
+            );
+        }
+        app.state::<Verifying>().0.store(false, Ordering::SeqCst);
+        let _ = app.emit("verify-done", report);
+    });
+
+    Ok(total)
+}
+
+/// Re-queue the given books for validation (used after a verify finds changed
+/// files) and kick the sweep.
+#[tauri::command]
+fn recheck_books(app: AppHandle, paths: Vec<String>) -> Result<(), String> {
+    {
+        let db = app.state::<AppDb>();
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        db::recheck(&conn, &paths)?;
+    }
+    app.state::<Paused>().0.store(false, Ordering::SeqCst);
+    start_sweep(app);
+    Ok(())
+}
+
 // ---------- Network sharing (b4) ----------
 
 #[tauri::command]
@@ -787,6 +906,7 @@ pub fn run() {
             app.manage(Kf8Cache::default());
             app.manage(Sweeping(AtomicBool::new(false)));
             app.manage(Paused(AtomicBool::new(false)));
+            app.manage(Verifying(AtomicBool::new(false)));
             app.manage(share::ShareState::default());
 
             if recovered {
@@ -811,6 +931,11 @@ pub fn run() {
             list_folders,
             get_setting,
             set_setting,
+            list_bookmarks,
+            add_bookmark,
+            remove_bookmark,
+            verify_library,
+            recheck_books,
             share_get_config,
             share_set_config,
             share_set_pin,

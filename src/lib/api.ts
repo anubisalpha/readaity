@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AuditRow,
+  Bookmark,
   BookRow,
   DupGroup,
   FolderInfo,
@@ -17,6 +18,7 @@ import type {
   ScanStatus,
   ShareConfig,
   ShareStatus,
+  VerifyReport,
 } from "../types";
 
 /** Open the native folder picker. Returns null if cancelled. */
@@ -79,6 +81,52 @@ export function getSetting(key: string): Promise<string | null> {
 /** Persist a preference. */
 export function setSetting(key: string, value: string): Promise<void> {
   return invoke("set_setting", { key, value });
+}
+
+// ---- Bookmarks ----
+
+export function listBookmarks(path: string): Promise<Bookmark[]> {
+  return invoke<Bookmark[]>("list_bookmarks", { path });
+}
+
+export function addBookmark(
+  path: string,
+  position: number,
+  label: string,
+): Promise<Bookmark> {
+  return invoke<Bookmark>("add_bookmark", { path, position, label });
+}
+
+export function removeBookmark(id: number): Promise<void> {
+  return invoke("remove_bookmark", { id });
+}
+
+// ---- Library integrity check ----
+
+/** Start an on-demand re-hash of every indexed book. Returns how many will be
+ *  checked (0 if a pass is already running / nothing to check). Progress via
+ *  `onVerifyStatus`; the result via `onVerifyDone`. */
+export function verifyLibrary(): Promise<number> {
+  return invoke<number>("verify_library");
+}
+
+/** Re-queue specific books for validation (after verify finds changed files). */
+export function recheckBooks(paths: string[]): Promise<void> {
+  return invoke("recheck_books", { paths });
+}
+
+export function onVerifyStatus(
+  cb: (s: { checked: number; total: number }) => void,
+): Promise<UnlistenFn> {
+  return listen<{ checked: number; total: number }>("verify-status", (e) =>
+    cb(e.payload),
+  );
+}
+
+export function onVerifyDone(
+  cb: (r: VerifyReport) => void,
+): Promise<UnlistenFn> {
+  return listen<VerifyReport>("verify-done", (e) => cb(e.payload));
 }
 
 // ---- Network sharing (b4) ----
