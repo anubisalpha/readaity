@@ -13,3 +13,7 @@ testdata/
 .DS_Store
 Thumbs.db
 *.log
+
+# Android signing (keep OFF-machine backups — losing the .jks is irreversible)
+*.jks
+keystore.properties
