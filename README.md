@@ -47,6 +47,8 @@ Calibre bridge). See [`docs/KINDLE_READING.md`](docs/KINDLE_READING.md).
   - Fixed-layout `.azw3` (comics / manga / picture books) — page-by-page
     reader, auto-detected, movable into the Comics library
   - TXT — scroll reader with BOM-aware UTF-8 / UTF-16 decoding
+  - All readers carry a bookmarks panel; the reflowable ones also honour the
+    Reading theme and text-size settings
 - [x] Reading position remembered per book (page index for comics/PDF,
       per-mille for reflowable formats) and resumed on reopen
 - [x] Drag books/folders between folders (with collision handling)
@@ -68,6 +70,15 @@ Calibre bridge). See [`docs/KINDLE_READING.md`](docs/KINDLE_READING.md).
 - [x] **Favourites** and **Being Read** shelves in the sidebar — one of each per
       library (star a book to favourite it; opening a book adds it to Being Read,
       most-recent first). `favorite` / `last_opened` columns on `books`.
+- [x] **Reading themes** (Settings → Reading) — Dark / Light / Sepia plus an
+      A−/A+ text-size control, applied to the reflowable readers (EPUB, MOBI /
+      AZW3, TXT, RTF).
+- [x] **Bookmarks** in every reader — page-based readers bookmark a page,
+      reflowable ones a scroll position with a text-snippet label; a slide-in
+      panel to jump between them (`bookmarks` table).
+- [x] **Verify library** (Settings → Library health) — re-hash every indexed
+      book on demand and report anything that changed on disk or went missing,
+      with one-click re-index. Non-destructive.
 - [x] App-wide top bar: the Readaity wordmark (aity-style teal underline) on the
       left, Settings on the right.
 
@@ -78,7 +89,7 @@ Calibre bridge). See [`docs/KINDLE_READING.md`](docs/KINDLE_READING.md).
       import books into, with "preserve source structure" or "flatten" on import
 - [ ] **Smart single-book import** — suggest a destination folder from the
       existing structure / the book's metadata, with "drop in Unsorted" fallback
-- [ ] Bookmarks, full-text search, reading themes; on-demand "verify library" (re-hash)
+- [ ] Full-text search
 - [ ] **Network sharing** — discover other Readaity instances on the LAN
       (mDNS) and import books from them. Design: [`docs/NETWORK_SHARING.md`](docs/NETWORK_SHARING.md)
 - [ ] **Audiobooks** as a third library type (favourites / being-read already
