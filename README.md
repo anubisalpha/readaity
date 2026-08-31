@@ -58,6 +58,9 @@ Calibre bridge). See [`docs/KINDLE_READING.md`](docs/KINDLE_READING.md).
 - [x] **Removed-from-library** list — remove a book or subtree from the library
       without deleting it from disk; restore individually or all at once
 - [x] Re-index / re-scan on demand (picks up new files and newly-supported formats)
+- [x] **Add books** (＋ Add → Add books…) — pick individual files; Readaity
+      suggests which existing library folder to copy each into (series /
+      title / format match) and does the copy + scan
 - [x] Invalid/corrupt files collected under a note instead of failing silently
 - [x] Settings → **Show first** — pick whether Comics or Ebooks is the library
       Readaity opens on and the one that leads the sidebar switcher (persisted
@@ -66,7 +69,14 @@ Calibre bridge). See [`docs/KINDLE_READING.md`](docs/KINDLE_READING.md).
       other devices on the LAN over **HTTPS (TLS 1.3 only)**, behind a PIN. Any
       browser can browse and download; a self-signed certificate with a
       "Trust this device" flow. Read-only, private-range-only, per-IP lockout.
+      QR codes, resumable (`Range`) downloads, per-download bandwidth + max-
+      concurrent caps, a system-tray "sharing on" indicator, and an address
+      picker when the machine has several LAN IPs.
       Design + build notes: [`docs/NETWORK_SHARING.md`](docs/NETWORK_SHARING.md)
+- [x] **Discover + import between instances** — the "🖧 Network" sidebar view
+      finds other Readaity instances on the LAN (mDNS), pins each one's
+      certificate on first connect, and imports selected books over the same
+      PIN-protected channel (skipping anything already in your library by hash).
 - [x] **Favourites** and **Being Read** shelves in the sidebar — one of each per
       library (star a book to favourite it; opening a book adds it to Being Read,
       most-recent first). `favorite` / `last_opened` columns on `books`.
@@ -87,11 +97,7 @@ Calibre bridge). See [`docs/KINDLE_READING.md`](docs/KINDLE_READING.md).
 - [ ] **Calibre bridge** — native `LRF` support and universal convert-to-EPUB
 - [ ] **Managed library area** — an optional Readaity-owned root you can migrate/
       import books into, with "preserve source structure" or "flatten" on import
-- [ ] **Smart single-book import** — suggest a destination folder from the
-      existing structure / the book's metadata, with "drop in Unsorted" fallback
 - [ ] Full-text search
-- [ ] **Network sharing** — discover other Readaity instances on the LAN
-      (mDNS) and import books from them. Design: [`docs/NETWORK_SHARING.md`](docs/NETWORK_SHARING.md)
 - [ ] **Audiobooks** as a third library type (favourites / being-read already
       cover it once the `library` value exists)
 
@@ -131,12 +137,16 @@ src-tauri/src/
   db.rs        SQLite: folders + books, two-phase status lifecycle, cover
                BLOBs, reading progress, exclusions, duplicate groups,
                key/value settings, share audit log
-  library.rs   quick_scan (phase 1) + validate_one (phase 2) + move planning
+  library.rs   quick_scan (phase 1) + validate_one (phase 2) + move planning +
+               import destination scoring
+  peer.rs      Client for another instance's share server — rustls fingerprint
+               pinning + ureq HTTP
   lib.rs       Tauri commands + background sweep emitting book-updated events
   share/       LAN share server — mod (lifecycle), cert (rcgen self-signed),
                tls (rustls TLS 1.3), guard (IP gating + lockout), auth
                (Argon2 PIN + signed cookies), ids (opaque book tokens),
-               routes (axum), assets/ (embedded browse UI). See docs/.
+               routes (axum + Range), discover (mdns-sd advertise/browse),
+               tray (sharing indicator), assets/ (embedded browse UI). See docs/.
 
 src/
   types.ts             Shared types mirroring the Rust surface

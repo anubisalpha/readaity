@@ -1,7 +1,9 @@
 # Network sharing — design
 
-**Status:** b4 (share server) **implemented** — see *b4 as built* at the end for
-what shipped vs. what was deferred. b6 (discovery + import) not started.
+**Status:** b4 (share server) **implemented**; b6 (mDNS discovery + peer import)
+**implemented** (2026-08-31) — see *b6 as built* at the end. The b4 polish list
+(QR codes, resumable downloads, connection/bandwidth caps, tray indicator) is
+also **done**.
 
 Readaity gains the ability to serve its libraries over the local network so that:
 
@@ -348,15 +350,55 @@ Two things learned while testing:
   browsers (Chrome/Firefox/Edge/Safari — own TLS stacks) are fine; this only
   bites native Win10 HTTP clients, which is acceptable for the target use.
 
-**Deferred to a b4.x / b6:**
-- **QR codes** — the Sharing tab lists the `https://…` URLs as text and points at
-  `…/trust/help`; no QR image yet.
-- **Range / byte-serving** on `/api/download` — currently a plain streamed 200
-  (fine for "Save As"; resumable downloads need `Range`).
-- **Bandwidth ceilings and max-concurrent-connection/download caps** — only the
-  per-IP rate limit + auth throttle are in.
+**Still deferred:**
 - **Stop-on-network-change / resume-from-sleep.**
 - **Live "connected clients" panel** — the audit log covers recent activity
   instead.
-- **Tray/title "Sharing on" indicator** — status shows in the Settings tab only.
 - **`tower_governor`** — replaced by a small in-house per-IP limiter in `guard`.
+
+---
+
+## b6 as built (2026-08-31)
+
+**Polish, all done:**
+- **QR codes** — `share_qr` renders an inline SVG (`qrcode` crate) for the chosen
+  URL, behind a "Show QR code" toggle on the Sharing tab.
+- **Resumable downloads** — `/api/download` parses a single `Range` header, seeks
+  + bounds the read, replies `206` with `Content-Range` / `Accept-Ranges`
+  (`routes::parse_range`, unit-tested).
+- **Caps** — `share_max_conn` (an `Arc<Semaphore>` of download permits, `503`
+  when exhausted) and `share_rate_kbps` (per-download token-paced streaming via
+  an mpsc channel), both configurable on the Sharing tab.
+- **Tray indicator** — `share::tray` shows a system-tray icon while sharing is
+  on (tooltip = name + book count, menu = Open Readaity / Stop sharing);
+  removed when it stops.
+- **Address picker** — `lan_ips()` returns addresses best-first (`192.168` →
+  `10` → `172.16-31` → other private → `169.254` last); the Sharing tab shows an
+  "Address to share" selector when there's more than one.
+
+**Discovery + import:**
+- **Advertise** — `share::discover::advertise` registers `_readaity._tcp` via
+  `mdns-sd` (TXT `v`, `pin=required`) while the server runs; the `Advert` handle
+  unregisters on drop.
+- **Browse** — `share::discover::browse(secs)` collects `ServiceResolved` events
+  → `Peer { name, host, port, addr, version }`, deduped by `addr:port`.
+- **Client** — `src/peer.rs`: a `rustls::ClientConfig` with a `PinnedVerifier`.
+  The handshake signature is verified normally (via
+  `rustls::crypto::verify_tls1{2,3}_signature`), and the leaf cert's SHA-256
+  fingerprint must equal the pinned one; with no pin yet it's recorded for the
+  user to confirm (trust-on-first-use). `ureq` for the blocking HTTP, run in
+  `spawn_blocking`.
+- **Commands** — `peer_browse`, `peer_check` (`{fingerprint, trusted}`; a
+  *changed* fingerprint is an error), `peer_trust` / `peer_forget`
+  (`settings` key `peer_trust_<host>`), `peer_books` (connect + PIN + `/api/books`,
+  each flagged `dupe` when its md5 is in `db::hashes(library)`), `peer_import`
+  (download non-dupes → `<dest>/<safe name>` with collision rename → `quick_scan`
+  + sweep; progress on `peer-import-status`).
+- **UI** — a "🖧 Network" sidebar row opens `NetworkView` (peers → trust →
+  PIN → browse w/ comics/ebooks toggle + checkboxes + dupe marks → destination
+  select + Import). PIN is session-memory only.
+- **Verified** via an mDNS loopback (one instance discovering its own advert):
+  fingerprint matched the Sharing tab exactly, TOFU trust pinned and was skipped
+  on reconnect, PIN auth listed both libraries with every book marked "already in
+  your library". Real two-machine import (download + copy) not exercised — one
+  machine — but uses the same authenticated GET as the (verified) browser client.
