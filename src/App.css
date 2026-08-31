@@ -108,8 +108,16 @@ body {
 }
 .app-logo .brand-mark {
   flex: none;
-  display: block;
-  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  font-size: 15px;
+  line-height: 1;
+  background: linear-gradient(180deg, #1e2748 0%, #1b2138 100%);
+  border: 1px solid #2a3150;
 }
 .app-logo .brand-a {
   color: #2fd3b8;
