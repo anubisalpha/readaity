@@ -202,6 +202,22 @@ export function setBookLibrary(
   return invoke<BookRow[]>("set_book_library", { path, to, library });
 }
 
+/** `[fixedLayoutCount, otherCount]` for a just-added folder. */
+export function folderLayoutSplit(
+  path: string,
+  library: string,
+): Promise<[number, number]> {
+  return invoke<[number, number]>("folder_layout_split", { path, library });
+}
+
+/** Move every fixed-layout book under a folder into the Comics library. */
+export function splitFolderLibraries(
+  path: string,
+  library: string,
+): Promise<BookRow[]> {
+  return invoke<BookRow[]>("split_folder_libraries", { path, library });
+}
+
 /** Store a frontend-generated cover (base64 JPEG) if the book has none. */
 export function setCover(
   path: string,

@@ -335,8 +335,19 @@ pub fn remove_folder(conn: &Connection, path: &str) -> Result<(), String> {
 }
 
 pub fn list_folders(conn: &Connection, library: &str) -> Result<Vec<FolderRow>, String> {
+    // Folders registered for this library, plus any folder that has books in
+    // this library via a per-book move (`library_override`) — so a comic-format
+    // azw3 moved out of its Ebooks folder still shows under a Comics folder node.
     let mut stmt = conn
-        .prepare("SELECT path, mode, library FROM folders WHERE library = ?1 ORDER BY added_at")
+        .prepare(
+            "SELECT path, mode, library FROM folders WHERE library = ?1
+             UNION
+             SELECT f.path, f.mode, ?1 FROM folders f
+               WHERE f.library <> ?1
+                 AND EXISTS (SELECT 1 FROM books b
+                             WHERE b.folder = f.path AND b.library = ?1)
+             ORDER BY 1",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![library], |r| {
@@ -559,12 +570,19 @@ pub fn upsert_discovered(
 }
 
 /// Delete rows under `folder` whose paths are not in `seen` (files removed on disk).
-pub fn prune_missing(conn: &Connection, folder: &str, seen: &[String]) -> Result<usize, String> {
+pub fn prune_missing(
+    conn: &Connection,
+    folder: &str,
+    library: &str,
+    seen: &[String],
+) -> Result<usize, String> {
+    // Only this library's books under the folder — a Comics rescan of a shared
+    // folder must not delete the Ebooks-library rows (and vice versa).
     let mut stmt = conn
-        .prepare("SELECT path FROM books WHERE folder = ?1")
+        .prepare("SELECT path FROM books WHERE folder = ?1 AND library = ?2")
         .map_err(|e| e.to_string())?;
     let existing: Vec<String> = stmt
-        .query_map(params![folder], |r| r.get::<_, String>(0))
+        .query_map(params![folder, library], |r| r.get::<_, String>(0))
         .map_err(|e| e.to_string())?
         .collect::<Result<_, _>>()
         .map_err(|e| e.to_string())?;
@@ -932,6 +950,46 @@ pub fn set_progress(conn: &Connection, path: &str, page: i64) -> Result<(), Stri
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Record whether a book is a fixed-layout KF8 (set cheaply in Phase 1 so the
+/// "split libraries" prompt can fire before the full sweep).
+pub fn set_fixed_layout(conn: &Connection, path: &str, fixed: bool) -> Result<(), String> {
+    conn.execute(
+        "UPDATE books SET fixed_layout = ?2 WHERE path = ?1",
+        params![path, fixed as i64],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// `(fixed_layout_count, other_count)` among a folder's books in a library —
+/// for the folder-add "these look like comics" prompt.
+pub fn layout_split(conn: &Connection, folder: &str, library: &str) -> Result<(i64, i64), String> {
+    conn.query_row(
+        "SELECT
+           COALESCE(SUM(fixed_layout), 0),
+           COALESCE(SUM(CASE WHEN fixed_layout = 0 THEN 1 ELSE 0 END), 0)
+         FROM books WHERE folder = ?1 AND library = ?2",
+        params![folder, library],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Move every fixed-layout book under `folder` (in `from`) to library `to`.
+pub fn move_folder_fixed_layout(
+    conn: &Connection,
+    folder: &str,
+    from: &str,
+    to: &str,
+) -> Result<usize, String> {
+    conn.execute(
+        "UPDATE books SET library = ?3, library_override = ?3, updated_at = ?4
+         WHERE folder = ?1 AND library = ?2 AND fixed_layout = 1",
+        params![folder, from, to, now()],
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Move a book to a different library than its folder's (or `None` to clear the

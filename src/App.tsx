@@ -30,6 +30,8 @@ import {
   resumeIndexing,
   setFavorite,
   setBookLibrary,
+  folderLayoutSplit,
+  splitFolderLibraries,
   setProgress,
   setSetting,
 } from "./lib/api";
@@ -75,6 +77,12 @@ function App() {
   const [ready, setReady] = useState(false);
   const [openBook, setOpenBook] = useState<BookRow | null>(null);
   const [pendingAdd, setPendingAdd] = useState<PendingAdd | null>(null);
+  // After adding an Ebooks folder that turned out to hold comic-format azw3.
+  const [splitPrompt, setSplitPrompt] = useState<{
+    path: string;
+    fixed: number;
+    other: number;
+  } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [counts, setCounts] = useState({ comics: 0, ebooks: 0 });
   const [recovered, setRecovered] = useState(false);
@@ -147,9 +155,30 @@ function App() {
       const bs = await addFolder(path, mode, library);
       setBooks(sortBooks(bs));
       setFolders(await listFolders(library));
+      // Comic-format azw3 scanned into Ebooks — offer to route them to Comics.
+      if (library === "ebooks") {
+        try {
+          const [fixed, other] = await folderLayoutSplit(path, library);
+          if (fixed > 0 && other > 0) setSplitPrompt({ path, fixed, other });
+        } catch (e) {
+          console.error("layout split probe failed", e);
+        }
+      }
     },
     [library],
   );
+
+  const applySplit = useCallback(async () => {
+    if (!splitPrompt) return;
+    const { path } = splitPrompt;
+    setSplitPrompt(null);
+    try {
+      setBooks(sortBooks(await splitFolderLibraries(path, library)));
+      setFolders(await listFolders(library));
+    } catch (e) {
+      console.error("split failed", e);
+    }
+  }, [splitPrompt, library]);
 
   const handleAddFolder = useCallback(async () => {
     const folder = await pickFolder();
@@ -333,6 +362,43 @@ function App() {
           onChoose={(mode) => doAdd(pendingAdd.path, mode)}
           onCancel={() => setPendingAdd(null)}
         />
+      )}
+
+      {splitPrompt && (
+        <div className="modal-overlay" onClick={() => setSplitPrompt(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2 className="modal-title">This folder has comics in it</h2>
+            <p className="modal-sub">
+              {splitPrompt.fixed} of these books are fixed-layout (comics, manga,
+              picture books) and {splitPrompt.other} are regular ebooks.
+              Fixed-layout books read best in your Comics library with
+              page-turning — the ebooks stay here.
+            </p>
+            <div className="modal-options">
+              <button
+                className="modal-option"
+                onClick={applySplit}
+                style={{ borderColor: "var(--accent)" }}
+              >
+                <span className="opt-title">
+                  Move {splitPrompt.fixed} to Comics (recommended)
+                </span>
+                <span className="opt-desc">
+                  Comics go to your Comics library; ebooks stay in Ebooks.
+                </span>
+              </button>
+              <button
+                className="modal-option"
+                onClick={() => setSplitPrompt(null)}
+              >
+                <span className="opt-title">Keep all in Ebooks</span>
+                <span className="opt-desc">
+                  You can still move them individually later.
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {settingsOpen && (

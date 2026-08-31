@@ -1,6 +1,33 @@
 import type { ScanStatus } from "../types";
 import { RefreshMenu } from "./RefreshMenu";
 
+/** The aity brand mark — matches the app icon and aity.uk's favicon. */
+function BrandMark() {
+  return (
+    <svg
+      className="brand-mark"
+      viewBox="0 0 32 32"
+      width="22"
+      height="22"
+      aria-hidden="true"
+    >
+      <rect width="32" height="32" rx="8" fill="#12172B" />
+      <text
+        x="16"
+        y="23"
+        fontFamily="Arial, Helvetica, sans-serif"
+        fontWeight="700"
+        fontSize="20"
+        fill="#2FD3B8"
+        textAnchor="middle"
+      >
+        a
+      </text>
+      <rect x="9" y="25" width="14" height="2" rx="1" fill="#2FD3B8" />
+    </svg>
+  );
+}
+
 interface Props {
   status: ScanStatus;
   comicsCount: number;
@@ -48,6 +75,7 @@ export function AppHeader({
   return (
     <header className={`app-header ${phase}`}>
       <div className="app-logo" aria-label="Readaity">
+        <BrandMark />
         Read<span className="brand-a">a</span>ity
       </div>
 

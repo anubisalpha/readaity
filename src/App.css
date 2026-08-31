@@ -98,10 +98,18 @@ body {
 }
 .app-logo {
   flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 20px;
   font-weight: 700;
   letter-spacing: 0.2px;
   color: var(--text);
+}
+.app-logo .brand-mark {
+  flex: none;
+  display: block;
+  border-radius: 6px;
 }
 .app-logo .brand-a {
   color: #2fd3b8;

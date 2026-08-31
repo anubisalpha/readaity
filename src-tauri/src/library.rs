@@ -98,12 +98,19 @@ pub fn quick_scan(conn: &Connection, library: &str, folders: &[String]) -> Resul
                 .to_string();
 
             seen.push(path_str.to_string());
-            if db::upsert_discovered(conn, path_str, folder, &format, &title, size, mtime, library)?
-            {
+            let fresh = db::upsert_discovered(
+                conn, path_str, folder, &format, &title, size, mtime, library,
+            )?;
+            if fresh {
                 needs_sweep += 1;
+                // Cheap record-0 read: flag fixed-layout KF8 now so the
+                // "split libraries" prompt can fire before the full sweep.
+                if matches!(format.as_str(), "mobi" | "prc" | "azw" | "azw3") {
+                    let _ = db::set_fixed_layout(conn, path_str, mobi::meta(path_str).fixed_layout);
+                }
             }
         }
-        db::prune_missing(conn, folder, &seen)?;
+        db::prune_missing(conn, folder, library, &seen)?;
     }
     Ok(needs_sweep)
 }

@@ -79,6 +79,35 @@ fn add_folder(
     list_books(app, library)
 }
 
+/// `[fixed_layout_count, other_count]` for a just-added folder — the frontend
+/// uses this to offer moving comic-format azw3 to the Comics library.
+#[tauri::command]
+fn folder_layout_split(
+    app: AppHandle,
+    path: String,
+    library: String,
+) -> Result<[i64; 2], String> {
+    let db = app.state::<AppDb>();
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let (fixed, other) = db::layout_split(&conn, &path, &library)?;
+    Ok([fixed, other])
+}
+
+/// Move every fixed-layout book under `path` into the Comics library.
+#[tauri::command]
+fn split_folder_libraries(
+    app: AppHandle,
+    path: String,
+    library: String,
+) -> Result<Vec<BookRow>, String> {
+    {
+        let db = app.state::<AppDb>();
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        db::move_folder_fixed_layout(&conn, &path, &library, "comics")?;
+    }
+    list_books(app, library)
+}
+
 #[tauri::command]
 fn remove_folder(app: AppHandle, path: String, library: String) -> Result<Vec<BookRow>, String> {
     {
@@ -819,6 +848,8 @@ pub fn run() {
             set_progress,
             set_favorite,
             set_book_library,
+            folder_layout_split,
+            split_folder_libraries,
             mark_opened,
             clear_being_read,
             pause_indexing,
