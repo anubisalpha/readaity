@@ -57,13 +57,22 @@ the container:
   5. concat every section's `<body>` inner as `<div class="kf8-section" id="kf8-sN">`,
      emit the CSS flows once as `<style>`, inline `kindle:embed:NNNN` images as
      data URIs, neutralise leftover `kindle:pos:` links.
-  6. **Chapter TOC** (2026-08-31): `assemble()` also emits a hidden
-     `<nav id="kf8-toc">` of `<a href="#kf8-sN">` from each section's `<title>`
-     — a JUNK denylist drops boilerplate ("Book Title", "Cover", …) and
-     consecutive duplicate titles are collapsed. There is **no** frequency
-     filter (a multi-chapter novel legitimately titles every section with the
-     book name). `HtmlReader` lifts the nav into a "☰ Contents" side panel and
-     `scrollIntoView`s the anchor. MOBI-6 NCX TOC still not done.
+  6. **Chapter TOC** — from the real **NCX index** (2026-08-31, revised):
+     `reassemble()` parses the NCX (record number at r0 offset `0xF4`): each
+     entry has a CNCX label (tag 3), a depth (tag 4) and a `pos_fid` target
+     (tag 6 = `[fragment_index, offset]`). While splicing, we record where each
+     fragment landed; the NCX target then resolves to an exact byte position in
+     one section, where we drop an `<a id="kf8-ncx-N">` anchor (snapped forward
+     to the next tag so it never splits markup). `assemble()` emits a hidden
+     `<nav id="kf8-toc">` of `<a href="#kf8-ncx-N" data-depth="…">`; `HtmlReader`
+     lifts it into a "☰ Contents" side panel (indented by depth) and
+     `scrollIntoView`s the anchor. Labels are HTML-entity-decoded.
+     **Fallback** when a book has no NCX (a few comics, one reflowable): the old
+     `<title>`-scraping heuristic — JUNK denylist + consecutive-duplicate
+     collapse, no frequency filter. Verified: Magic of Oz now lists all 26
+     chapters (it reassembles to 2 skeleton sections — section ≠ chapter);
+     War of the Worlds nests 27 chapters under "Book One/Two"; every anchor in
+     all 25 NCX-bearing test files resolves, landing exactly on the heading.
 
   Tests (`#[ignore]`, env-var gated): `kf8_real` (one file), `kf8_dir` (batch
   survey → `<dir>/_out/`), `kf8_pages_dir` (fixed-layout page survey).
@@ -138,16 +147,23 @@ not a native parser. `.kfx` is deliberately not in `EBOOK_EXTS`.
 
 ### 4. TOC / chapter navigation
 
-- **KF8** — done (gap 1, step 6): section-`<title>` list → "☰ Contents" panel.
-- **MOBI-6** — still nothing. Chapter breaks live in INDX / a real NCX; would
-  need INDX parsing + filepos→anchor mapping. Not started.
+- **KF8** — done from the real NCX (gap 1, step 6). `<title>` heuristic kept as
+  the fallback for NCX-less books.
+- **MOBI-6** — done (2026-08-31): `content()` reads the NCX at r0 `0xF4`, parses
+  it with the same INDX/TAGX machinery, and inserts `<a id="kf8-ncx-N">` anchors
+  at each entry's `filepos` (tag 1) in the decompressed markup — before the
+  CP1252/UTF-8 decode so byte offsets are exact — then prepends the same hidden
+  `<nav id="kf8-toc">`. Guarded: needs ≥2 entries with in-range positions or no
+  nav is emitted. **Unverified against a real file** — the test corpus is all
+  KF8; no plain MOBI-6 book was available. Low risk (fails closed to "no TOC").
 
 ## Still open
 
-- **MOBI-6 NCX TOC** (above).
 - **Fixed-layout image sharing** — Defiance-class books duplicate spread images
   across pages; serve images by a per-book URL instead of inlining
   (Defiance ~290 MB in the lazy cache today).
 - **KFX** — defer to the Calibre bridge; don't build native.
-- **Done:** KF8 reassembly, HUFF/CDIC, fixed-layout page reader, KF8 chapter
-  TOC, comic-azw3 → Comics (Part D). Shipped in **v0.6.0** (2026-08-31).
+- **MOBI-6 NCX** — implemented but wants a real MOBI-6 file to confirm.
+- **Done:** KF8 reassembly, HUFF/CDIC, fixed-layout page reader, KF8 + MOBI-6
+  NCX chapter TOC, comic-azw3 → Comics (Part D). KF8/etc. shipped in **v0.6.0**
+  (2026-08-31); NCX TOC landed just after.

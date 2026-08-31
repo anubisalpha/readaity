@@ -302,12 +302,28 @@ pub fn content(path: &str) -> Result<String, String> {
         return kf8::assemble(&body, &data, &offs, r0, first_image);
     }
 
+    // MOBI-6 chapter list from the NCX index (record number at r0 offset 0xF4).
+    // Each entry's `filepos` (tag 1) is a byte offset into the decompressed
+    // markup; drop an anchor there so `HtmlReader` can offer a "Contents" panel.
+    let mut body = body;
+    let toc: Vec<_> = kf8::mobi6_ncx(&data, &offs, r0)
+        .into_iter()
+        .filter(|(_, pos, _)| *pos < body.len())
+        .collect();
+    let toc = if toc.len() > 1 { toc } else { Vec::new() };
+    for (k, (_, pos, _)) in toc.iter().enumerate().rev() {
+        let at = kf8::snap_to_tag(&body, *pos);
+        let anchor = format!("<a id=\"kf8-ncx-{k}\"></a>");
+        body.splice(at..at, anchor.bytes());
+    }
+
     let html = if encoding == 65001 {
         String::from_utf8_lossy(&body).into_owned()
     } else {
         decode_cp1252(&body)
     };
-    Ok(inline_images(&data, &offs, first_image, &html))
+    let html = inline_images(&data, &offs, first_image, &html);
+    Ok(kf8::inject_body_nav(&html, &kf8::nav_html(toc.iter().map(|(l, _, d)| (l.as_str(), *d)))))
 }
 
 /// Layout hints from a MOBI/KF8's EXTH metadata.
@@ -509,6 +525,23 @@ pub fn kf8_pages(path: &str) -> Result<Vec<Kf8Page>, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn entity_decode() {
+        use super::kf8::unescape_entities;
+        assert_eq!(unescape_entities("Author&#8217;s Note"), "Author\u{2019}s Note");
+        assert_eq!(unescape_entities("A &amp; B &#x2014; C"), "A & B \u{2014} C");
+        assert_eq!(unescape_entities("plain text"), "plain text");
+        assert_eq!(unescape_entities("&notareal;"), "&notareal;");
+    }
+
+    #[test]
+    fn snap_anchor_to_tag_boundary() {
+        use super::kf8::snap_to_tag;
+        assert_eq!(snap_to_tag(b"abc<p>def<i>x", 0), 3);
+        assert_eq!(snap_to_tag(b"abc<p>def<i>x", 4), 9);
+        assert_eq!(snap_to_tag(b"no tags here", 2), 12);
+    }
+
     /// Reassemble a real KF8-only file when READAITY_KF8_FILE points at one.
     /// Ignored by default (no fixture is checked in). Run with, e.g.:
     ///   READAITY_KF8_FILE=/path/book.azw3 cargo test kf8_real -- --ignored --nocapture
@@ -877,11 +910,166 @@ mod kf8 {
         Ok(out)
     }
 
-    /// A reassembled KF8 book: each section's full XHTML, plus the non-text flows
-    /// (CSS / SVG) as UTF-8-lossy strings.
+    /// Concatenated CNCX (compiled label strings) records for an index: they
+    /// follow the `nblocks` data records. `ncncx` count is at header offset 0x34.
+    fn read_cncx(data: &[u8], offs: &[usize], idx: usize) -> Vec<u8> {
+        let rec = |i: usize| -> &[u8] {
+            match (offs.get(i), offs.get(i + 1)) {
+                (Some(&a), Some(&b)) => &data[a.min(data.len())..b.min(data.len())],
+                _ => &[],
+            }
+        };
+        let hdr = rec(idx);
+        let nblocks = u32be(hdr, 0x18).unwrap_or(0) as usize;
+        let ncncx = u32be(hdr, 0x34).unwrap_or(0) as usize;
+        let mut out = Vec::new();
+        for k in 0..ncncx {
+            out.extend_from_slice(rec(idx + 1 + nblocks + k));
+        }
+        out
+    }
+
+    /// Decode the handful of HTML entities that show up in NCX / `<title>` labels
+    /// so the chapter panel shows real punctuation, not `&#8217;`.
+    pub fn unescape_entities(s: &str) -> String {
+        if !s.contains('&') {
+            return s.to_string();
+        }
+        static RE: OnceLock<Regex> = OnceLock::new();
+        let re = RE.get_or_init(|| Regex::new(r"&(#x?[0-9A-Fa-f]+|[A-Za-z]+);").unwrap());
+        re.replace_all(s, |c: &regex::Captures| {
+            let b = &c[1];
+            let ch = if let Some(hex) = b.strip_prefix("#x").or_else(|| b.strip_prefix("#X")) {
+                u32::from_str_radix(hex, 16).ok().and_then(char::from_u32)
+            } else if let Some(dec) = b.strip_prefix('#') {
+                dec.parse::<u32>().ok().and_then(char::from_u32)
+            } else {
+                match b {
+                    "amp" => Some('&'),
+                    "lt" => Some('<'),
+                    "gt" => Some('>'),
+                    "quot" => Some('"'),
+                    "apos" => Some('\''),
+                    "nbsp" => Some(' '),
+                    "mdash" => Some('\u{2014}'),
+                    "ndash" => Some('\u{2013}'),
+                    "hellip" => Some('\u{2026}'),
+                    "lsquo" | "rsquo" => Some('\u{2019}'),
+                    "ldquo" | "rdquo" => Some('"'),
+                    _ => None,
+                }
+            };
+            ch.map(String::from).unwrap_or_else(|| c[0].to_string())
+        })
+        .into_owned()
+    }
+
+    /// A CNCX string at byte offset `o`: a forward varint length then that many
+    /// UTF-8 bytes. Entity-decoded and whitespace-collapsed; empty out of range.
+    fn cncx_str(cncx: &[u8], o: usize) -> String {
+        if o >= cncx.len() {
+            return String::new();
+        }
+        let (len, p) = varint(cncx, o);
+        let end = (p + len as usize).min(cncx.len());
+        let raw = String::from_utf8_lossy(&cncx[p..end]);
+        unescape_entities(&raw).split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// KF8 NCX entries: `(label, fragment_index, offset_in_fragment, depth)`.
+    /// Tag 3 = CNCX label offset, tag 4 = depth, tag 6 = `[fid, off]`.
+    /// Empty vec on any parse failure — the caller falls back to `<title>`s.
+    pub fn parse_ncx(data: &[u8], offs: &[usize], idx: usize) -> Vec<(String, u32, u32, u32)> {
+        let Ok(entries) = parse_indx(data, offs, idx) else { return Vec::new() };
+        let cncx = read_cncx(data, offs, idx);
+        let mut out = Vec::new();
+        for (_, v) in &entries {
+            let label = v.get(&3).and_then(|x| x.first()).map(|&o| cncx_str(&cncx, o as usize)).unwrap_or_default();
+            let depth = v.get(&4).and_then(|x| x.first()).copied().unwrap_or(0);
+            let fid6 = v.get(&6).cloned().unwrap_or_default();
+            let (fid, off) = (fid6.first().copied().unwrap_or(0), fid6.get(1).copied().unwrap_or(0));
+            if label.is_empty() {
+                continue;
+            }
+            out.push((label, fid, off, depth));
+        }
+        out
+    }
+
+    /// MOBI-6 NCX entries: `(label, filepos, depth)` sorted by `filepos`.
+    /// Tag 1 = filepos (byte offset into the decompressed markup), tag 3 = label,
+    /// tag 4 = depth. `idx` is the record number at r0 offset 0xF4.
+    pub fn mobi6_ncx(data: &[u8], offs: &[usize], r0: &[u8]) -> Vec<(String, usize, u32)> {
+        let nrec = offs.len().saturating_sub(1);
+        let idx = match u32be(r0, 0xF4) {
+            Some(n) if (n as usize) < nrec => n as usize,
+            _ => return Vec::new(),
+        };
+        let Ok(entries) = parse_indx(data, offs, idx) else { return Vec::new() };
+        let cncx = read_cncx(data, offs, idx);
+        let mut out: Vec<(String, usize, u32)> = Vec::new();
+        for (_, v) in &entries {
+            let Some(pos) = v.get(&1).and_then(|x| x.first()).copied() else { continue };
+            let label = v.get(&3).and_then(|x| x.first()).map(|&o| cncx_str(&cncx, o as usize)).unwrap_or_default();
+            let depth = v.get(&4).and_then(|x| x.first()).copied().unwrap_or(0);
+            if label.is_empty() {
+                continue;
+            }
+            out.push((label, pos as usize, depth));
+        }
+        out.sort_by_key(|e| e.1);
+        out.dedup_by(|a, b| a.1 == b.1 && a.0 == b.0);
+        out
+    }
+
+    /// Smallest index `>= pos` that begins a tag (`<`), so an inserted anchor
+    /// never splits an existing tag. Falls back to `pos` (clamped).
+    pub fn snap_to_tag(bytes: &[u8], pos: usize) -> usize {
+        let start = pos.min(bytes.len());
+        match bytes[start..].iter().position(|&b| b == b'<') {
+            Some(d) => start + d,
+            None => bytes.len(),
+        }
+    }
+
+    /// Build a hidden `<nav id="kf8-toc">` from `(label, depth)` pairs, or "" for
+    /// fewer than two entries. `HtmlReader` lifts it into a "Contents" panel.
+    pub fn nav_html<'a>(items: impl Iterator<Item = (&'a str, u32)>) -> String {
+        let body: String = items
+            .enumerate()
+            .map(|(k, (label, depth))| {
+                format!("<a href=\"#kf8-ncx-{k}\" data-depth=\"{depth}\">{}</a>", esc(label))
+            })
+            .collect();
+        if body.matches("<a ").count() > 1 {
+            format!("<nav id=\"kf8-toc\" hidden>{body}</nav>\n")
+        } else {
+            String::new()
+        }
+    }
+
+    /// Insert `snippet` immediately after the opening `<body …>` tag, or at the
+    /// front if there is no body element.
+    pub fn inject_body_nav(html: &str, snippet: &str) -> String {
+        if snippet.is_empty() {
+            return html.to_string();
+        }
+        if let Some(open) = html.find("<body") {
+            if let Some(gt) = html[open..].find('>') {
+                let at = open + gt + 1;
+                return format!("{}{snippet}{}", &html[..at], &html[at..]);
+            }
+        }
+        format!("{snippet}{html}")
+    }
+
+    /// A reassembled KF8 book: each section's full XHTML, the non-text flows
+    /// (CSS / SVG) as UTF-8-lossy strings, and a flat chapter list built from the
+    /// NCX — `(label, anchor_id, depth)` — empty when the book has no NCX.
     pub struct Book {
         pub sections: Vec<String>,
         pub flows: Vec<String>,
+        pub toc: Vec<(String, String, u32)>,
     }
 
     /// Splice text fragments into their XHTML skeletons. `None` when the
@@ -936,9 +1124,12 @@ mod kf8 {
             _ => return None,
         };
 
-        let mut sections = Vec::with_capacity(skels.len());
+        // `frag_at[fid] = (section index, byte offset within that section)` — the
+        // spot the fragment's text was spliced in, used to resolve NCX targets.
+        let mut files: Vec<Vec<u8>> = Vec::with_capacity(skels.len());
+        let mut frag_at: Vec<Option<(usize, usize)>> = vec![None; frags.len()];
         let mut fp = 0usize;
-        for (_, sv) in &skels {
+        for (si, (_, sv)) in skels.iter().enumerate() {
             let nchunks = sv.get(&1).and_then(|v| v.first()).copied().unwrap_or(0) as usize;
             let geom = sv.get(&6).cloned().unwrap_or_default();
             let (sstart, slen) = (
@@ -952,17 +1143,49 @@ mod kf8 {
             let mut base = sstart + slen;
             for _ in 0..nchunks {
                 let Some((cname, cv)) = frags.get(fp) else { break };
-                fp += 1;
                 let insert = cname.parse::<usize>().unwrap_or(base);
                 let clen = cv.get(&6).and_then(|v| v.get(1)).copied().unwrap_or(0) as usize;
                 let chunk = text0.get(base..(base + clen).min(text0.len())).unwrap_or_default();
                 base += clen;
                 let at = insert.saturating_sub(sstart).min(file.len());
                 file.splice(at..at, chunk.iter().copied());
+                frag_at[fp] = Some((si, at));
+                fp += 1;
             }
-            sections.push(String::from_utf8_lossy(&file).into_owned());
+            files.push(file);
         }
-        Some(Book { sections, flows })
+
+        // NCX (record number at r0 offset 0xF4) → drop `<a id="kf8-ncx-N">`
+        // anchors at each chapter's resolved position, in the section it lands
+        // in. Insert per section back-to-front so earlier offsets stay valid.
+        let ncx = opt_rec(u32be(r0, 0xF4));
+        let mut toc: Vec<(String, String, u32)> = Vec::new();
+        if ncx != usize::MAX {
+            let entries = parse_ncx(data, offs, ncx);
+            let mut per_section: Vec<Vec<(usize, String)>> = vec![Vec::new(); files.len()];
+            for (k, (label, fid, off, depth)) in entries.iter().enumerate() {
+                let Some((si, base)) = frag_at.get(*fid as usize).copied().flatten() else { continue };
+                let file = &files[si];
+                let want = (base + *off as usize).min(file.len());
+                let pos = snap_to_tag(file, want);
+                let anchor = format!("kf8-ncx-{k}");
+                per_section[si].push((pos, anchor.clone()));
+                toc.push((label.clone(), anchor, *depth));
+            }
+            for (si, mut marks) in per_section.into_iter().enumerate() {
+                marks.sort_by(|a, b| b.0.cmp(&a.0));
+                for (pos, anchor) in marks {
+                    let tag = format!("<a id=\"{anchor}\" class=\"kf8-ncx\"></a>");
+                    files[si].splice(pos..pos, tag.bytes());
+                }
+            }
+        }
+
+        let sections: Vec<String> = files
+            .iter()
+            .map(|f| String::from_utf8_lossy(f).into_owned())
+            .collect();
+        Some(Book { sections, flows, toc })
     }
 
     /// Rebuild a KF8 book into one HTML document: concatenate every section's
@@ -995,31 +1218,36 @@ mod kf8 {
             sections.push_str("</div>\n");
         }
 
-        // A flat chapter list from the sections' <title>s. Drop generic
-        // boilerplate ("Book Title", "Cover", …) then collapse consecutive runs
-        // of the same title (a multi-chapter novel titled with the book name).
-        const JUNK: &[&str] = &[
-            "book title", "cover", "title", "[title]", "titlepage", "title page",
-            "copyright", "contents", "table of contents", "toc", "untitled",
-        ];
-        let mut toc: Vec<(usize, &str)> = Vec::new();
-        for (i, t) in titles.iter().enumerate() {
-            let Some(t) = t else { continue };
-            if JUNK.contains(&t.to_lowercase().trim()) {
-                continue;
-            }
-            if toc.last().map(|(_, p)| *p != t.as_str()).unwrap_or(true) {
-                toc.push((i, t.as_str()));
-            }
-        }
-        let nav = if toc.len() > 1 {
-            let items: String = toc
-                .iter()
-                .map(|(i, t)| format!("<a href=\"#kf8-s{i}\">{}</a>", esc(t)))
-                .collect();
-            format!("<nav id=\"kf8-toc\" hidden>{items}</nav>\n")
+        // Chapter list: prefer the book's real NCX (anchors already spliced into
+        // the sections during reassembly). Fall back to the sections' <title>s
+        // when there is no NCX — dropping boilerplate and collapsing consecutive
+        // runs of the same title (a multi-chapter novel titled with the book name).
+        let nav = if book.toc.len() > 1 {
+            nav_html(book.toc.iter().map(|(l, _, d)| (l.as_str(), *d)))
         } else {
-            String::new()
+            const JUNK: &[&str] = &[
+                "book title", "cover", "title", "[title]", "titlepage", "title page",
+                "copyright", "contents", "table of contents", "toc", "untitled",
+            ];
+            let mut toc: Vec<(usize, &str)> = Vec::new();
+            for (i, t) in titles.iter().enumerate() {
+                let Some(t) = t else { continue };
+                if JUNK.contains(&t.to_lowercase().trim()) {
+                    continue;
+                }
+                if toc.last().map(|(_, p)| *p != t.as_str()).unwrap_or(true) {
+                    toc.push((i, t.as_str()));
+                }
+            }
+            if toc.len() > 1 {
+                let items: String = toc
+                    .iter()
+                    .map(|(i, t)| format!("<a href=\"#kf8-s{i}\" data-depth=\"0\">{}</a>", esc(t)))
+                    .collect();
+                format!("<nav id=\"kf8-toc\" hidden>{items}</nav>\n")
+            } else {
+                String::new()
+            }
         };
 
         let css = book.flows.join("\n");

@@ -14,6 +14,7 @@ interface Props {
 interface TocEntry {
   title: string;
   id: string;
+  depth: number;
 }
 
 const READER_CSS = `
@@ -64,6 +65,7 @@ export function HtmlReader({ book, initialPage, load, onBack, onPageChange }: Pr
               [...nav.querySelectorAll("a")].map((a) => ({
                 title: a.textContent?.trim() || "—",
                 id: (a.getAttribute("href") || "").replace(/^#/, ""),
+                depth: Math.max(0, Math.min(4, Number(a.getAttribute("data-depth")) || 0)),
               })),
             );
           }
@@ -159,7 +161,7 @@ export function HtmlReader({ book, initialPage, load, onBack, onPageChange }: Pr
                 <div className="toc-head">Contents</div>
                 <ul>
                   {toc.map((e, i) => (
-                    <li key={i}>
+                    <li key={i} style={{ paddingLeft: `${e.depth * 14}px` }}>
                       <button onClick={() => jumpTo(e.id)}>{e.title}</button>
                     </li>
                   ))}

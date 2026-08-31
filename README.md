@@ -42,8 +42,8 @@ Calibre bridge). See [`docs/KINDLE_READING.md`](docs/KINDLE_READING.md).
     fit-width / fit-height
   - EPUB — reflowable via `epub.js`, locations-based % progress
   - PDF — `pdf.js`, with a generated shelf cover
-  - MOBI / AZW / AZW3 / RTF — extracted to HTML in an isolated frame; KF8
-    books get a "Contents" chapter panel
+  - MOBI / AZW / AZW3 / RTF — extracted to HTML in an isolated frame, with a
+    "Contents" chapter panel built from the book's NCX (KF8 and MOBI-6)
   - Fixed-layout `.azw3` (comics / manga / picture books) — page-by-page
     reader, auto-detected, movable into the Comics library
   - TXT — scroll reader with BOM-aware UTF-8 / UTF-16 decoding
