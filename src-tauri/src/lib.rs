@@ -283,15 +283,24 @@ fn share_get_config(app: AppHandle) -> share::ShareConfig {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn share_set_config(
     app: AppHandle,
     port: u16,
     name: String,
     allowlist: String,
     audit: bool,
+    max_conn: u32,
+    rate_kbps: u32,
 ) -> Result<share::ShareConfig, String> {
-    share::save_config(&app, port, &name, &allowlist, audit)?;
+    share::save_config(&app, port, &name, &allowlist, audit, max_conn, rate_kbps)?;
     Ok(share::load_config(&app))
+}
+
+/// An inline SVG QR code for a share URL, for the "scan to open" panel.
+#[tauri::command]
+fn share_qr(url: String) -> Result<String, String> {
+    share::qr_svg(&url)
 }
 
 #[tauri::command]
@@ -908,6 +917,7 @@ pub fn run() {
             app.manage(Paused(AtomicBool::new(false)));
             app.manage(Verifying(AtomicBool::new(false)));
             app.manage(share::ShareState::default());
+            app.manage(share::TrayState::default());
 
             if recovered {
                 // The old DB was corrupt and has been rebuilt from the salvaged
@@ -938,6 +948,7 @@ pub fn run() {
             recheck_books,
             share_get_config,
             share_set_config,
+            share_qr,
             share_set_pin,
             share_generate_pin,
             share_start,

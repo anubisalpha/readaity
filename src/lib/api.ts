@@ -140,8 +140,22 @@ export function shareSetConfig(
   name: string,
   allowlist: string,
   audit: boolean,
+  maxConn: number,
+  rateKbps: number,
 ): Promise<ShareConfig> {
-  return invoke<ShareConfig>("share_set_config", { port, name, allowlist, audit });
+  return invoke<ShareConfig>("share_set_config", {
+    port,
+    name,
+    allowlist,
+    audit,
+    maxConn,
+    rateKbps,
+  });
+}
+
+/** Inline SVG QR code for a share URL. */
+export function shareQr(url: string): Promise<string> {
+  return invoke<string>("share_qr", { url });
 }
 
 export function shareSetPin(pin: string): Promise<void> {

@@ -119,6 +119,10 @@ export interface ShareConfig {
   pin_set: boolean;
   allowlist: string;
   audit: boolean;
+  /** Max simultaneous downloads (0 = unlimited). */
+  max_conn: number;
+  /** Per-download bandwidth ceiling in KB/s (0 = unlimited). */
+  rate_kbps: number;
 }
 
 /** Live state of the share server (mirrors `share::ShareStatus`). */

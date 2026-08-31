@@ -5,6 +5,7 @@ import {
   shareClearAudit,
   shareGeneratePin,
   shareGetConfig,
+  shareQr,
   shareRegenerateCert,
   shareSetConfig,
   shareSetPin,
@@ -57,6 +58,51 @@ function fmtTime(unix: number): string {
   return new Date(unix * 1000).toLocaleString();
 }
 
+/** "Scan to open" — one QR per reachable URL. */
+function QrCodes({ urls }: { urls: string[] }) {
+  const [svgs, setSvgs] = useState<Record<string, string>>({});
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    Promise.all(urls.map((u) => shareQr(u).then((svg) => [u, svg] as const)))
+      .then((pairs) => {
+        if (!cancelled) setSvgs(Object.fromEntries(pairs));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [open, urls]);
+
+  return (
+    <div className="sharing-qr">
+      <button className="btn ghost small" onClick={() => setOpen((v) => !v)}>
+        {open ? "Hide QR codes" : "Show QR codes"}
+      </button>
+      {open && (
+        <div className="sharing-qr-grid">
+          {urls.map((u) => (
+            <figure key={u}>
+              {svgs[u] ? (
+                <span
+                  className="qr-img"
+                  // QR SVG is generated locally by our own Rust command.
+                  dangerouslySetInnerHTML={{ __html: svgs[u] }}
+                />
+              ) : (
+                <span className="qr-img qr-loading">…</span>
+              )}
+              <figcaption>{u}</figcaption>
+            </figure>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function SharingSettings() {
   const [cfg, setCfg] = useState<ShareConfig | null>(null);
   const [status, setStatus] = useState<ShareStatus | null>(null);
@@ -70,6 +116,8 @@ export function SharingSettings() {
   const [name, setName] = useState("");
   const [allowlist, setAllowlist] = useState("");
   const [auditOn, setAuditOn] = useState(true);
+  const [maxConn, setMaxConn] = useState("0");
+  const [rateKbps, setRateKbps] = useState("0");
   const [pin, setPin] = useState("");
   const [showTrust, setShowTrust] = useState(false);
 
@@ -88,6 +136,8 @@ export function SharingSettings() {
     setName(c.name);
     setAllowlist(c.allowlist);
     setAuditOn(c.audit);
+    setMaxConn(String(c.max_conn));
+    setRateKbps(String(c.rate_kbps));
   }, []);
 
   useEffect(() => {
@@ -138,6 +188,8 @@ export function SharingSettings() {
         name.trim(),
         allowlist.trim(),
         auditOn,
+        Math.max(0, Number(maxConn) || 0),
+        Math.max(0, Number(rateKbps) || 0),
       );
       setCfg(c);
     }, "Saved.");
@@ -225,6 +277,9 @@ export function SharingSettings() {
             ))}
           </ul>
         )}
+        {status.running && status.urls.length > 0 && (
+          <QrCodes urls={status.urls} />
+        )}
       </div>
 
       {/* ---- PIN ---- */}
@@ -283,6 +338,24 @@ export function SharingSettings() {
             value={allowlist}
             onChange={(e) => setAllowlist(e.target.value)}
           />
+        </div>
+        <div className="sharing-field">
+          <span className="settings-field-label">Max simultaneous downloads</span>
+          <input
+            className="sharing-input short"
+            value={maxConn}
+            onChange={(e) => setMaxConn(e.target.value.replace(/\D/g, ""))}
+          />
+          <span className="settings-hint">0 = unlimited</span>
+        </div>
+        <div className="sharing-field">
+          <span className="settings-field-label">Bandwidth limit per download (KB/s)</span>
+          <input
+            className="sharing-input short"
+            value={rateKbps}
+            onChange={(e) => setRateKbps(e.target.value.replace(/\D/g, ""))}
+          />
+          <span className="settings-hint">0 = unlimited</span>
         </div>
         <label className="sharing-check">
           <input

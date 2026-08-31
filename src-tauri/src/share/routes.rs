@@ -32,6 +32,10 @@ pub struct Ctx {
     pub cert_pem: String,
     pub fingerprint: String,
     pub guards: Arc<Mutex<guard::Guards>>,
+    /// Permits for concurrent downloads (a large pool when unlimited).
+    pub downloads: Arc<tokio::sync::Semaphore>,
+    /// Per-download bandwidth ceiling, KB/s (0 = unlimited).
+    pub rate_kbps: u32,
 }
 
 pub fn router(ctx: Ctx) -> Router {
@@ -371,6 +375,33 @@ async fn api_cover(
     }
 }
 
+/// Parse a single-range `Range: bytes=…` header against a known total length.
+/// Returns `Some((start, end_inclusive))`, or `None` when there's no Range
+/// header. `Err(())` means the range is syntactically present but unsatisfiable.
+fn parse_range(headers: &HeaderMap, total: u64) -> Result<Option<(u64, u64)>, ()> {
+    let Some(raw) = headers.get(header::RANGE).and_then(|v| v.to_str().ok()) else {
+        return Ok(None);
+    };
+    let spec = raw.trim().strip_prefix("bytes=").ok_or(())?;
+    if spec.contains(',') {
+        return Err(()); // multi-range not supported
+    }
+    let (a, b) = spec.split_once('-').ok_or(())?;
+    let (start, end) = match (a.trim(), b.trim()) {
+        ("", "") => return Err(()),
+        ("", suf) => {
+            let n: u64 = suf.parse().map_err(|_| ())?;
+            (total.saturating_sub(n), total.saturating_sub(1))
+        }
+        (s, "") => (s.parse().map_err(|_| ())?, total.saturating_sub(1)),
+        (s, e) => (s.parse().map_err(|_| ())?, e.parse().map_err(|_| ())?),
+    };
+    if total == 0 || start > end || start >= total {
+        return Err(());
+    }
+    Ok(Some((start, end.min(total - 1))))
+}
+
 async fn api_download(
     State(ctx): State<Ctx>,
     ci: ConnectInfo<SocketAddr>,
@@ -388,31 +419,120 @@ async fn api_download(
     let Some(book) = ids::find(&ctx.session_key, &books, &id).cloned() else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let file = match tokio::fs::File::open(&book.path).await {
+
+    // Cap concurrent downloads.
+    let Ok(permit) = ctx.downloads.clone().try_acquire_owned() else {
+        return deny(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Too many downloads in progress — try again shortly.",
+        );
+    };
+
+    let total = book.size.max(0) as u64;
+    let (start, end, status) = match parse_range(&headers, total) {
+        Ok(Some((s, e))) => (s, e, StatusCode::PARTIAL_CONTENT),
+        Ok(None) => (0, total.saturating_sub(1), StatusCode::OK),
+        Err(()) => {
+            return (
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                [(header::CONTENT_RANGE, format!("bytes */{total}"))],
+                "Requested range not satisfiable",
+            )
+                .into_response();
+        }
+    };
+    let span = if total == 0 { 0 } else { end - start + 1 };
+
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    let mut file = match tokio::fs::File::open(&book.path).await {
         Ok(f) => f,
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
-    let stream = tokio_util::io::ReaderStream::new(file);
-    let body = Body::from_stream(stream);
+    if start > 0 && file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    // Stream the (bounded) slice through a bandwidth-paced channel; the permit
+    // rides along and is released when the transfer ends.
+    let rate_bps = ctx.rate_kbps as u64 * 1024;
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(4);
+    tokio::spawn(async move {
+        let _permit = permit;
+        let mut remaining = span;
+        let mut buf = vec![0u8; 64 * 1024];
+        let began = std::time::Instant::now();
+        let mut sent: u64 = 0;
+        while remaining > 0 {
+            let want = remaining.min(buf.len() as u64) as usize;
+            let n = match file.read(&mut buf[..want]).await {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) => {
+                    let _ = tx.send(Err(e)).await;
+                    break;
+                }
+            };
+            remaining -= n as u64;
+            sent += n as u64;
+            if tx
+                .send(Ok(axum::body::Bytes::copy_from_slice(&buf[..n])))
+                .await
+                .is_err()
+            {
+                break; // client hung up
+            }
+            if rate_bps > 0 {
+                let expected = std::time::Duration::from_secs_f64(sent as f64 / rate_bps as f64);
+                let elapsed = began.elapsed();
+                if expected > elapsed {
+                    tokio::time::sleep(expected - elapsed).await;
+                }
+            }
+        }
+    });
+    let body = Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx));
+
     let fname = format!("{}.{}", sanitise(&book.title), book.format);
     audit(&ctx, ip, "download", Some(&book.title));
-    (
-        [
-            (
-                header::CONTENT_TYPE,
-                "application/octet-stream".to_string(),
-            ),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{fname}\""),
-            ),
-            (header::CONTENT_LENGTH, book.size.to_string()),
-        ],
-        body,
-    )
-        .into_response()
+    let mut resp = Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CONTENT_DISPOSITION, format!("attachment; filename=\"{fname}\""))
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_LENGTH, span.to_string());
+    if status == StatusCode::PARTIAL_CONTENT {
+        resp = resp.header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{total}"));
+    }
+    resp.body(body).unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 async fn fallback() -> Response {
     StatusCode::NOT_FOUND.into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_range;
+    use axum::http::{header, HeaderMap, HeaderValue};
+
+    fn h(v: &str) -> HeaderMap {
+        let mut m = HeaderMap::new();
+        m.insert(header::RANGE, HeaderValue::from_str(v).unwrap());
+        m
+    }
+
+    #[test]
+    fn range_parsing() {
+        assert_eq!(parse_range(&HeaderMap::new(), 1000), Ok(None));
+        assert_eq!(parse_range(&h("bytes=0-99"), 1000), Ok(Some((0, 99))));
+        assert_eq!(parse_range(&h("bytes=500-"), 1000), Ok(Some((500, 999))));
+        assert_eq!(parse_range(&h("bytes=-100"), 1000), Ok(Some((900, 999))));
+        // end past EOF is clamped
+        assert_eq!(parse_range(&h("bytes=900-5000"), 1000), Ok(Some((900, 999))));
+        // unsatisfiable / malformed
+        assert_eq!(parse_range(&h("bytes=1000-1001"), 1000), Err(()));
+        assert_eq!(parse_range(&h("bytes=50-10"), 1000), Err(()));
+        assert_eq!(parse_range(&h("bytes=0-10,20-30"), 1000), Err(()));
+        assert_eq!(parse_range(&h("chunks=0-10"), 1000), Err(()));
+    }
 }

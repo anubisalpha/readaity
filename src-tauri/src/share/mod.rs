@@ -7,6 +7,7 @@ mod guard;
 mod ids;
 mod routes;
 mod tls;
+mod tray;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -16,6 +17,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::db::AppDb;
+
+pub use tray::TrayState;
 
 /// Managed Tauri state: the running server, if any.
 #[derive(Default)]
@@ -35,6 +38,23 @@ pub struct ShareConfig {
     pub pin_set: bool,
     pub allowlist: String,
     pub audit: bool,
+    /// Max simultaneous downloads (0 = unlimited).
+    pub max_conn: u32,
+    /// Per-download bandwidth ceiling in KB/s (0 = unlimited).
+    pub rate_kbps: u32,
+}
+
+/// QR code for a URL as an inline SVG string.
+pub fn qr_svg(url: &str) -> Result<String, String> {
+    use qrcode::{render::svg, QrCode};
+    let code = QrCode::new(url.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(code
+        .render::<svg::Color>()
+        .min_dimensions(180, 180)
+        .quiet_zone(true)
+        .dark_color(svg::Color("#111111"))
+        .light_color(svg::Color("#ffffff"))
+        .build())
 }
 
 #[derive(Serialize, Clone)]
@@ -77,15 +97,20 @@ pub fn load_config(app: &AppHandle) -> ShareConfig {
         pin_set: get(app, "share_pin_hash").is_some(),
         allowlist: get(app, "share_allowlist").unwrap_or_default(),
         audit: get(app, "share_audit").as_deref() != Some("false"),
+        max_conn: get(app, "share_max_conn").and_then(|s| s.parse().ok()).unwrap_or(0),
+        rate_kbps: get(app, "share_rate_kbps").and_then(|s| s.parse().ok()).unwrap_or(0),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn save_config(
     app: &AppHandle,
     port: u16,
     name: &str,
     allowlist: &str,
     audit: bool,
+    max_conn: u32,
+    rate_kbps: u32,
 ) -> Result<(), String> {
     if !(1024..=65535).contains(&port) {
         return Err("Port must be between 1024 and 65535.".into());
@@ -94,6 +119,8 @@ pub fn save_config(
     put(app, "share_name", name.trim())?;
     put(app, "share_allowlist", allowlist.trim())?;
     put(app, "share_audit", if audit { "true" } else { "false" })?;
+    put(app, "share_max_conn", &max_conn.to_string())?;
+    put(app, "share_rate_kbps", &rate_kbps.to_string())?;
     Ok(())
 }
 
@@ -175,6 +202,8 @@ pub fn start(app: &AppHandle) -> Result<ShareStatus, String> {
     let mut session_key = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut session_key);
 
+    // 0 = unlimited: model as a very large permit pool.
+    let permits = if cfg.max_conn == 0 { 1024 } else { cfg.max_conn as usize };
     let ctx = routes::Ctx {
         app: app.clone(),
         session_key,
@@ -185,6 +214,8 @@ pub fn start(app: &AppHandle) -> Result<ShareStatus, String> {
         cert_pem: String::from_utf8_lossy(&cert_pem).into_owned(),
         fingerprint: fingerprint.clone(),
         guards: Arc::new(Mutex::new(guard::Guards::default())),
+        downloads: Arc::new(tokio::sync::Semaphore::new(permits)),
+        rate_kbps: cfg.rate_kbps,
     };
     let router = routes::router(ctx);
 
@@ -213,6 +244,7 @@ pub fn start(app: &AppHandle) -> Result<ShareStatus, String> {
         });
     }
     put(app, "share_enabled", "true")?;
+    tray::refresh(app);
     Ok(status(app))
 }
 
@@ -227,6 +259,7 @@ pub fn stop(app: &AppHandle) -> Result<(), String> {
             .graceful_shutdown(Some(std::time::Duration::from_secs(2)));
     }
     put(app, "share_enabled", "false")?;
+    tray::refresh(app);
     Ok(())
 }
 
