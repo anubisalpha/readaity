@@ -325,6 +325,18 @@ pub fn suggest_folders(
     out
 }
 
+/// A filesystem-safe `<title>.<ext>` name for an imported book.
+pub fn safe_book_name(title: &str, fmt: &str) -> String {
+    let cleaned: String = title
+        .chars()
+        .map(|c| if r#"<>:"/\|?*"#.contains(c) || c.is_control() { '_' } else { c })
+        .collect();
+    let stem = cleaned.trim().trim_matches('.').trim();
+    let stem = if stem.is_empty() { "book" } else { stem };
+    let stem: String = stem.chars().take(120).collect();
+    format!("{stem}.{fmt}")
+}
+
 /// Copy one file into `dest_dir`, giving it a clean `<title>.<ext>` name and
 /// renaming on collision. Returns the final path.
 pub fn import_one(src: &str, dest_dir: &str) -> Result<String, String> {

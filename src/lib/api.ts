@@ -15,6 +15,9 @@ import type {
   MoveOp,
   MovePlan,
   PageData,
+  Peer,
+  PeerBook,
+  PeerCheck,
   ProbeResult,
   ScanStatus,
   ShareConfig,
@@ -406,6 +409,52 @@ export function moveItems(
   library: LibraryKind,
 ): Promise<BookRow[]> {
   return invoke<BookRow[]>("move_items", { dest_dir: destDir, ops, library });
+}
+
+// ---- LAN discovery + peer import ----
+
+export function peerBrowse(): Promise<Peer[]> {
+  return invoke<Peer[]>("peer_browse");
+}
+
+export function peerCheck(host: string, port: number): Promise<PeerCheck> {
+  return invoke<PeerCheck>("peer_check", { host, port });
+}
+
+export function peerTrust(host: string, fingerprint: string): Promise<void> {
+  return invoke("peer_trust", { host, fingerprint });
+}
+
+export function peerForget(host: string): Promise<void> {
+  return invoke("peer_forget", { host });
+}
+
+export function peerBooks(
+  host: string,
+  port: number,
+  pin: string,
+  library: LibraryKind,
+): Promise<PeerBook[]> {
+  return invoke<PeerBook[]>("peer_books", { host, port, pin, library });
+}
+
+export function peerImport(
+  host: string,
+  port: number,
+  pin: string,
+  library: LibraryKind,
+  ids: string[],
+  dest: string,
+): Promise<BookRow[]> {
+  return invoke<BookRow[]>("peer_import", { host, port, pin, library, ids, dest });
+}
+
+export function onPeerImportStatus(
+  cb: (s: { done: number; total: number }) => void,
+): Promise<UnlistenFn> {
+  return listen<{ done: number; total: number }>("peer-import-status", (e) =>
+    cb(e.payload),
+  );
 }
 
 // ---- Events ----

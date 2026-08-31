@@ -4,6 +4,7 @@ mod ebook;
 mod formats;
 mod library;
 mod mobi;
+mod peer;
 mod rtf;
 mod share;
 
@@ -452,6 +453,178 @@ fn share_clear_audit(app: AppHandle) -> Result<(), String> {
     let db = app.state::<AppDb>();
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     db::clear_audit(&conn)
+}
+
+// ---------- LAN discovery + peer import (b6) ----------
+
+/// Browse the LAN for other Readaity instances (~3s).
+#[tauri::command]
+async fn peer_browse() -> Vec<share::discover::Peer> {
+    tauri::async_runtime::spawn_blocking(|| share::discover::browse(3))
+        .await
+        .unwrap_or_default()
+}
+
+#[derive(serde::Serialize)]
+struct PeerCheck {
+    fingerprint: String,
+    trusted: bool,
+}
+
+/// Read a peer's cert fingerprint. `trusted` is true when it matches the one
+/// already pinned for this host; an error means a *changed* fingerprint.
+#[tauri::command]
+async fn peer_check(app: AppHandle, host: String, port: u16) -> Result<PeerCheck, String> {
+    let stored = {
+        let db = app.state::<AppDb>();
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        db::get_setting(&conn, &peer::trust_key(&host))?.filter(|s| !s.is_empty())
+    };
+    let want = stored.clone();
+    let (h, p) = (host.clone(), port);
+    let fp = tauri::async_runtime::spawn_blocking(move || peer::probe(&h, p, want))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(PeerCheck {
+        trusted: stored.as_deref().map(|s| s.eq_ignore_ascii_case(&fp)).unwrap_or(false),
+        fingerprint: fp,
+    })
+}
+
+/// Pin a peer's fingerprint as trusted.
+#[tauri::command]
+fn peer_trust(app: AppHandle, host: String, fingerprint: String) -> Result<(), String> {
+    let db = app.state::<AppDb>();
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    db::set_setting(&conn, &peer::trust_key(&host), &fingerprint)
+}
+
+/// Forget a peer's pinned fingerprint.
+#[tauri::command]
+fn peer_forget(app: AppHandle, host: String) -> Result<(), String> {
+    let db = app.state::<AppDb>();
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    db::del_setting(&conn, &peer::trust_key(&host))
+}
+
+#[derive(serde::Serialize)]
+struct PeerBookOut {
+    id: String,
+    title: String,
+    format: String,
+    size: i64,
+    has_cover: bool,
+    /// A book with the same content hash is already in this library.
+    dupe: bool,
+}
+
+/// The pinned fingerprint for a host, or an error telling the user to trust it.
+fn trusted_fp(app: &AppHandle, host: &str) -> Result<String, String> {
+    let db = app.state::<AppDb>();
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    db::get_setting(&conn, &peer::trust_key(host))?
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Trust this device before connecting.".to_string())
+}
+
+/// List a peer's books in one library, flagging those already here by hash.
+#[tauri::command]
+async fn peer_books(
+    app: AppHandle,
+    host: String,
+    port: u16,
+    pin: String,
+    library: String,
+) -> Result<Vec<PeerBookOut>, String> {
+    let local = {
+        let db = app.state::<AppDb>();
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        db::hashes(&conn, &library)?
+    };
+    let fp = trusted_fp(&app, &host)?;
+    let (h, lib) = (host.clone(), library.clone());
+    let books = tauri::async_runtime::spawn_blocking(move || {
+        peer::connect(&h, port, &pin, fp).and_then(|s| s.books(&lib))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(books
+        .into_iter()
+        .map(|b| PeerBookOut {
+            dupe: b.md5.as_deref().map(|m| local.contains(m)).unwrap_or(false),
+            id: b.id,
+            title: b.title,
+            format: b.format,
+            size: b.size,
+            has_cover: b.has_cover,
+        })
+        .collect())
+}
+
+/// Download the chosen books from a peer into `dest` (skipping dupes by hash),
+/// then rescan so they're catalogued.
+#[tauri::command]
+async fn peer_import(
+    app: AppHandle,
+    host: String,
+    port: u16,
+    pin: String,
+    library: String,
+    ids: Vec<String>,
+    dest: String,
+) -> Result<Vec<BookRow>, String> {
+    let local = {
+        let db = app.state::<AppDb>();
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        db::hashes(&conn, &library)?
+    };
+    let fp = trusted_fp(&app, &host)?;
+    let want: std::collections::HashSet<String> = ids.into_iter().collect();
+    let lib = library.clone();
+    let dest2 = dest.clone();
+    let app2 = app.clone();
+    let h = host.clone();
+
+    let imported = tauri::async_runtime::spawn_blocking(move || -> Result<usize, String> {
+        let session = peer::connect(&h, port, &pin, fp)?;
+        let all = session.books(&lib)?;
+        let picked: Vec<peer::PeerBook> = all
+            .into_iter()
+            .filter(|b| want.contains(&b.id))
+            .filter(|b| b.md5.as_deref().map(|m| !local.contains(m)).unwrap_or(true))
+            .collect();
+        std::fs::create_dir_all(&dest2).map_err(|e| e.to_string())?;
+        let total = picked.len();
+        for (i, b) in picked.iter().enumerate() {
+            let _ = app2.emit("peer-import-status", serde_json::json!({ "done": i, "total": total }));
+            let name = library::safe_book_name(&b.title, &b.format);
+            let mut target = std::path::Path::new(&dest2).join(&name);
+            let mut n = 2;
+            while target.exists() {
+                let stem = std::path::Path::new(&name)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("book");
+                target = std::path::Path::new(&dest2).join(format!("{stem} ({n}).{}", b.format));
+                n += 1;
+            }
+            session.download(&b.id, &target)?;
+        }
+        let _ = app2.emit("peer-import-status", serde_json::json!({ "done": total, "total": total }));
+        Ok(total)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    let _ = imported;
+    {
+        let db = app.state::<AppDb>();
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        library::quick_scan(&conn, &library, &[dest])?;
+    }
+    app.state::<Paused>().0.store(false, Ordering::SeqCst);
+    start_sweep(app.clone());
+    list_books(app, library)
 }
 
 #[tauri::command]
@@ -1059,6 +1232,12 @@ pub fn run() {
             share_regenerate_cert,
             share_audit_log,
             share_clear_audit,
+            peer_browse,
+            peer_check,
+            peer_trust,
+            peer_forget,
+            peer_books,
+            peer_import,
             library_counts,
             probe_folder,
             plan_move,

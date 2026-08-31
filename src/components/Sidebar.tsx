@@ -18,6 +18,7 @@ interface Props {
   onNavigate: (path: string | null) => void;
   onToggle: (path: string) => void;
   onDropFolder: (dest: string) => void;
+  onOpenNetwork: () => void;
 }
 
 /** Left column: library switcher on top, Windows-Explorer-style folder tree below. */
@@ -35,6 +36,7 @@ export function Sidebar({
   onNavigate,
   onToggle,
   onDropFolder,
+  onOpenNetwork,
 }: Props) {
   return (
     <aside className="sidebar">
@@ -72,6 +74,11 @@ export function Sidebar({
         <span className="tree-chevron placeholder" />
         <span className="tree-label">Being Read</span>
         <span className="tree-count">{beingReadCount}</span>
+      </button>
+
+      <button className="tree-row shelf-row" onClick={onOpenNetwork}>
+        <span className="tree-chevron placeholder" />
+        <span className="tree-label">🖧 Network</span>
       </button>
 
       <button

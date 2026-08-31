@@ -3,6 +3,7 @@
 
 mod auth;
 mod cert;
+pub mod discover;
 mod guard;
 mod ids;
 mod routes;
@@ -28,6 +29,8 @@ pub struct Running {
     handle: axum_server::Handle,
     port: u16,
     fingerprint: String,
+    /// mDNS registration — dropped (and unregistered) when the server stops.
+    _advert: Option<discover::Advert>,
 }
 
 #[derive(Serialize, Clone)]
@@ -255,6 +258,8 @@ pub fn start(app: &AppHandle) -> Result<ShareStatus, String> {
         }
     });
 
+    let advert = discover::advertise(&cfg.name, cfg.port, env!("CARGO_PKG_VERSION"));
+
     {
         let state = app.state::<ShareState>();
         let mut guard = state.0.lock().map_err(|e| e.to_string())?;
@@ -262,6 +267,7 @@ pub fn start(app: &AppHandle) -> Result<ShareStatus, String> {
             handle,
             port: cfg.port,
             fingerprint,
+            _advert: advert,
         });
     }
     put(app, "share_enabled", "true")?;

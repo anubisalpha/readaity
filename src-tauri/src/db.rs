@@ -410,6 +410,24 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<(), Stri
     Ok(())
 }
 
+/// Delete one preference.
+pub fn del_setting(conn: &Connection, key: &str) -> Result<(), String> {
+    conn.execute("DELETE FROM settings WHERE key = ?1", params![key])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// The set of MD5 hashes of `ready` books in one library — for import dedupe.
+pub fn hashes(conn: &Connection, library: &str) -> Result<std::collections::HashSet<String>, String> {
+    let mut stmt = conn
+        .prepare("SELECT md5 FROM books WHERE library = ?1 AND md5 IS NOT NULL")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![library], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+}
+
 // ---------- Bookmarks ----------
 
 /// One saved place in a book. `position` is in the same unit the reader stores

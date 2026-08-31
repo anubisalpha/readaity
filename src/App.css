@@ -1103,6 +1103,107 @@ textarea.sharing-input {
   margin-top: 16px;
 }
 
+/* ---------- Network view (LAN peers) ---------- */
+.netview {
+  padding: 4px 2px 40px;
+}
+.peer-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.peer-row {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elev-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.peer-row:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.peer-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+.peer-addr {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.peer-panel {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.peer-panel h2 {
+  font-size: 16px;
+  margin: 0;
+}
+.peer-books {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 44vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.peer-books li {
+  border-top: 1px solid var(--border);
+}
+.peer-books li:first-child {
+  border-top: 0;
+}
+.peer-books label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.peer-books li.dupe label {
+  opacity: 0.5;
+  cursor: default;
+}
+.pb-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pb-size {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.pb-dupe {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.peer-import-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.peer-import-bar select {
+  flex: 1;
+  min-width: 160px;
+}
+
 /* ---------- Add books (import) dialog ---------- */
 .modal.add-books {
   width: min(640px, 100%);

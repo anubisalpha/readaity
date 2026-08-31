@@ -157,3 +157,28 @@ export interface AuditRow {
   event: string;
   detail: string | null;
 }
+
+/** A Readaity instance found on the LAN via mDNS. */
+export interface Peer {
+  name: string;
+  host: string;
+  port: number;
+  addr: string;
+  version: string;
+}
+
+/** A peer's certificate fingerprint and whether it's already pinned as trusted. */
+export interface PeerCheck {
+  fingerprint: string;
+  trusted: boolean;
+}
+
+/** One book on a peer, with a flag if it's already in the local library. */
+export interface PeerBook {
+  id: string;
+  title: string;
+  format: string;
+  size: number;
+  has_cover: boolean;
+  dupe: boolean;
+}

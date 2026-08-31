@@ -50,6 +50,7 @@ import { Reader } from "./components/Reader";
 import { EbookReader } from "./components/EbookReader";
 import { AddFolderDialog } from "./components/AddFolderDialog";
 import { AddBooksDialog } from "./components/AddBooksDialog";
+import { NetworkView } from "./components/NetworkView";
 import { Settings } from "./components/Settings";
 import { isComic } from "./lib/formats";
 
@@ -94,6 +95,7 @@ function App() {
     other: number;
   } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [networkOpen, setNetworkOpen] = useState(false);
   const [importPlans, setImportPlans] = useState<ImportPlan[] | null>(null);
   const [importBusy, setImportBusy] = useState(false);
   const [counts, setCounts] = useState({ comics: 0, ebooks: 0 });
@@ -405,6 +407,7 @@ function App() {
           onToggleFavorite={handleToggleFavorite}
           onMoveLibrary={handleMoveLibrary}
           onClearBeingRead={handleClearBeingRead}
+          onOpenNetwork={() => setNetworkOpen(true)}
         />
       </div>
 
@@ -465,6 +468,16 @@ function App() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {networkOpen && (
+        <div className="overlay-full">
+          <NetworkView
+            library={library}
+            onImported={(bs) => setBooks(sortBooks(bs))}
+            onClose={() => setNetworkOpen(false)}
+          />
         </div>
       )}
 

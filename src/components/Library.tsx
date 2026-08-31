@@ -37,6 +37,7 @@ interface Props {
   onToggleFavorite: (path: string) => void;
   onMoveLibrary: (path: string, to: LibraryKind) => void;
   onClearBeingRead: (path: string) => void;
+  onOpenNetwork: () => void;
 }
 
 type Shelf = "library" | "favorites" | "beingRead";
@@ -57,6 +58,7 @@ export function Library({
   onToggleFavorite,
   onMoveLibrary,
   onClearBeingRead,
+  onOpenNetwork,
 }: Props) {
   // Which shelf is showing: the folder view, or a flat filtered shelf.
   const [shelf, setShelf] = useState<Shelf>("library");
@@ -284,6 +286,7 @@ export function Library({
           onNavigate={goFolder}
           onToggle={toggle}
           onDropFolder={dropOnFolder}
+          onOpenNetwork={onOpenNetwork}
         />
 
         <main className="content">
