@@ -58,7 +58,8 @@ export function AppHeader({
     <header className={`app-header ${phase}`}>
       <div className="app-logo" aria-label="Readaity">
         <BrandMark />
-        Read<span className="brand-a">a</span>ity
+        {/* prettier-ignore */}
+        <span className="wordmark">Read<span className="brand-a">a</span>ity</span>
       </div>
 
       <div className="app-status">
