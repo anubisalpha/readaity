@@ -318,6 +318,8 @@ pub struct Meta {
     pub fixed_layout: bool,
     /// EXTH 123 `book-type` — e.g. "comic", "children".
     pub book_type: Option<String>,
+    /// EXTH 126 `original-resolution` — `(width, height)` in px, if present.
+    pub original_resolution: Option<(u32, u32)>,
 }
 
 /// Read the EXTH layout hints from record 0. Never errors — absent = default.
@@ -351,6 +353,14 @@ pub fn meta(path: &str) -> Meta {
                 m.book_type =
                     Some(String::from_utf8_lossy(val).trim_matches('\0').to_string())
             }
+            126 => {
+                let s = String::from_utf8_lossy(val);
+                if let Some((w, h)) = s.trim().split_once('x') {
+                    if let (Ok(w), Ok(h)) = (w.trim().parse(), h.trim().parse()) {
+                        m.original_resolution = Some((w, h));
+                    }
+                }
+            }
             _ => {}
         }
         p += len;
@@ -358,26 +368,143 @@ pub fn meta(path: &str) -> Meta {
     m
 }
 
-/// The page images of a fixed-layout KF8 book, in reading order, as
-/// `(mime, bytes)`. Empty when the book isn't fixed-layout KF8 or can't be
-/// reassembled.
-pub fn page_images(path: &str) -> Result<Vec<(String, Vec<u8>)>, String> {
+/// One page of a fixed-layout KF8 book: a self-contained HTML document sized to
+/// `w`×`h` CSS px (images inlined, `kindle:` refs resolved). The frontend renders
+/// it in a scaled iframe.
+#[derive(serde::Serialize, Clone)]
+pub struct Kf8Page {
+    pub html: String,
+    pub w: u32,
+    pub h: u32,
+}
+
+/// Drop CSS rules whose `#id` / `.class` selector doesn't appear in `body`.
+/// Rules with no id/class selector (globals, `@font-face`, `@page`, …) are kept.
+/// Cheap and lenient — the point is to stop a book-wide stylesheet dragging
+/// every image into every page.
+fn prune_css(css: &str, body: &str) -> String {
+    static TOK: OnceLock<Regex> = OnceLock::new();
+    let tok = TOK.get_or_init(|| Regex::new(r"[#.][A-Za-z_][\w-]*").unwrap());
+
+    let mut out = String::with_capacity(css.len() / 4);
+    let mut rest = css;
+    while let Some(open) = rest.find('{') {
+        // A selector list ends at the previous `}` or start; the block at `}`.
+        let sel = rest[..open].trim();
+        let Some(close) = rest[open..].find('}') else {
+            out.push_str(rest);
+            break;
+        };
+        let block = &rest[open..=open + close];
+        // A descendant selector applies only if EVERY `#id` it names is on the
+        // page; classes we treat leniently (any match).
+        let id_present = |name: &str| {
+            body.contains(&format!("id=\"{name}\"")) || body.contains(&format!("id='{name}'"))
+        };
+        let class_present = |name: &str| {
+            body.contains(&format!("\"{name}\""))
+                || body.contains(&format!(" {name} "))
+                || body.contains(&format!("\"{name} "))
+                || body.contains(&format!(" {name}\""))
+        };
+        let ids: Vec<&str> = tok
+            .find_iter(sel)
+            .filter(|m| m.as_str().starts_with('#'))
+            .map(|m| &m.as_str()[1..])
+            .collect();
+        let classes: Vec<&str> = tok
+            .find_iter(sel)
+            .filter(|m| m.as_str().starts_with('.'))
+            .map(|m| &m.as_str()[1..])
+            .collect();
+        let keep = sel.starts_with('@')
+            || (ids.is_empty() && classes.is_empty())
+            || (!ids.is_empty() && ids.iter().all(|n| id_present(n)))
+            || (ids.is_empty() && classes.iter().any(|n| class_present(n)));
+        if keep {
+            out.push_str(sel);
+            out.push_str(block);
+            out.push('\n');
+        }
+        rest = &rest[open + close + 1..];
+    }
+    out
+}
+
+/// `(width, height)` for a fixed-layout section — from its `<meta viewport>` or
+/// `<body style="width:…px">`.
+fn section_dims(sec: &str) -> Option<(u32, u32)> {
+    static VP: OnceLock<Regex> = OnceLock::new();
+    static BODY: OnceLock<Regex> = OnceLock::new();
+    let vp = VP.get_or_init(|| {
+        Regex::new(r#"viewport[^>]*content="[^"]*?width\s*=\s*(\d+)[^"]*?height\s*=\s*(\d+)"#).unwrap()
+    });
+    let body = BODY.get_or_init(|| {
+        Regex::new(r#"<body[^>]*style="[^"]*?width\s*:\s*(\d+)px[^"]*?height\s*:\s*(\d+)px"#).unwrap()
+    });
+    vp.captures(sec)
+        .or_else(|| body.captures(sec))
+        .and_then(|c| Some((c[1].parse().ok()?, c[2].parse().ok()?)))
+}
+
+/// Every page of a fixed-layout KF8 book, in reading order, each as a sized HTML
+/// document. Empty when the book isn't fixed-layout KF8 or can't be reassembled.
+pub fn kf8_pages(path: &str) -> Result<Vec<Kf8Page>, String> {
     let Loaded { data, offs, text, first_image, is_kf8, .. } = load(path)?;
     if !is_kf8 {
         return Ok(Vec::new());
     }
     let r0 = &data[offs[0].min(data.len())..offs[1].min(data.len())];
-    let records = kf8::page_image_records(&text, &data, &offs, r0, first_image);
-    let mut out = Vec::with_capacity(records.len());
-    for rec in records {
-        let Some(r) = rec else { continue };
-        let img = &data[offs[r].min(data.len())..offs[r + 1].min(data.len())];
-        if img.len() < 4 || !(img.starts_with(&[0xFF, 0xD8]) || img.starts_with(b"\x89PNG") || img.starts_with(b"GIF")) {
-            continue;
-        }
-        out.push((sniff_mime(img).to_string(), img.to_vec()));
-    }
-    Ok(out)
+    let Some(book) = kf8::reassemble(&text, &data, &offs, r0) else {
+        return Ok(Vec::new());
+    };
+    let (dw, dh) = meta(path).original_resolution.unwrap_or((1200, 1600));
+
+    static FLOWLINK: OnceLock<Regex> = OnceLock::new();
+    let flow_re = FLOWLINK.get_or_init(|| Regex::new(r"kindle:flow:0*([0-9]+)").unwrap());
+
+    let pages = book
+        .sections
+        .iter()
+        .map(|sec| {
+            let (w, h) = section_dims(sec).unwrap_or((dw, dh));
+            let head = &sec[..sec.find("</head>").unwrap_or(sec.len())];
+
+            // Only the CSS flows this section actually links — inlining every
+            // flow into every page blows up on books with per-page stylesheets.
+            let linked: Vec<usize> = flow_re
+                .captures_iter(head)
+                .filter_map(|c| c[1].parse::<usize>().ok())
+                .collect();
+            // `kindle:flow:0001` is the first non-text flow, i.e. book.flows[0].
+            let raw_css: String = if linked.is_empty() {
+                book.flows.join("\n")
+            } else {
+                linked
+                    .iter()
+                    .filter_map(|&n| book.flows.get(n.checked_sub(1)?))
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+
+            let body = kf8::body_inner(sec);
+            // Fixed-layout books share one big stylesheet whose per-page
+            // `#fsN-img { background-image: … }` rules each pull in an image.
+            // Keep only the rules whose id/class is on this page, so we inline
+            // one image per page instead of the whole book on every page.
+            let css = prune_css(&raw_css, body);
+            let mut html = format!(
+                "<!doctype html><html><head><meta charset=\"utf-8\"><style>\n\
+                 html,body{{margin:0;padding:0;width:{w}px;height:{h}px;overflow:hidden}}\n\
+                 {css}\n</style></head><body>{body}</body></html>"
+            );
+            html = kf8::inline_kf8_images(&data, &offs, first_image, &html);
+            html = kf8::strip_kindle_refs(&html);
+            Kf8Page { html, w, h }
+        })
+        .collect();
+    Ok(pages)
 }
 
 #[cfg(test)]
@@ -472,13 +599,22 @@ mod tests {
             if !m.fixed_layout {
                 continue;
             }
-            match super::page_images(&p.to_string_lossy()) {
-                Ok(pages) => eprintln!(
-                    "FL  book_type={:<9} pages={:<3}  {}",
-                    m.book_type.as_deref().unwrap_or("-"),
-                    pages.len(),
-                    name
-                ),
+            match super::kf8_pages(&p.to_string_lossy()) {
+                Ok(pages) => {
+                    let imgs: usize = pages.iter().filter(|p| p.html.contains("data:image")).count();
+                    let bytes: usize = pages.iter().map(|p| p.html.len()).sum();
+                    let dims: std::collections::BTreeSet<_> =
+                        pages.iter().map(|p| (p.w, p.h)).collect();
+                    eprintln!(
+                        "FL  type={:<9} pages={:<3} with_img={:<3} tot={:>4}KB dims={:?}  {}",
+                        m.book_type.as_deref().unwrap_or("-"),
+                        pages.len(),
+                        imgs,
+                        bytes / 1024,
+                        dims,
+                        name
+                    )
+                }
                 Err(e) => eprintln!("FL  ERR {e}  {name}"),
             }
         }
@@ -851,18 +987,67 @@ mod kf8 {
         };
 
         let mut sections = String::new();
-        for s in &book.sections {
-            sections.push_str("<div class=\"kf8-section\">");
+        let mut titles: Vec<Option<String>> = Vec::with_capacity(book.sections.len());
+        for (i, s) in book.sections.iter().enumerate() {
+            titles.push(section_title(s));
+            sections.push_str(&format!("<div class=\"kf8-section\" id=\"kf8-s{i}\">"));
             sections.push_str(body_inner(s));
             sections.push_str("</div>\n");
         }
+
+        // A flat chapter list from the sections' <title>s. Drop generic
+        // boilerplate ("Book Title", "Cover", …) then collapse consecutive runs
+        // of the same title (a multi-chapter novel titled with the book name).
+        const JUNK: &[&str] = &[
+            "book title", "cover", "title", "[title]", "titlepage", "title page",
+            "copyright", "contents", "table of contents", "toc", "untitled",
+        ];
+        let mut toc: Vec<(usize, &str)> = Vec::new();
+        for (i, t) in titles.iter().enumerate() {
+            let Some(t) = t else { continue };
+            if JUNK.contains(&t.to_lowercase().trim()) {
+                continue;
+            }
+            if toc.last().map(|(_, p)| *p != t.as_str()).unwrap_or(true) {
+                toc.push((i, t.as_str()));
+            }
+        }
+        let nav = if toc.len() > 1 {
+            let items: String = toc
+                .iter()
+                .map(|(i, t)| format!("<a href=\"#kf8-s{i}\">{}</a>", esc(t)))
+                .collect();
+            format!("<nav id=\"kf8-toc\" hidden>{items}</nav>\n")
+        } else {
+            String::new()
+        };
+
         let css = book.flows.join("\n");
         let mut doc = format!(
-            "<!doctype html><html><head><meta charset=\"utf-8\"><style>\n{css}\n</style></head><body>\n{sections}</body></html>"
+            "<!doctype html><html><head><meta charset=\"utf-8\"><style>\n{css}\n</style></head><body>\n{nav}{sections}</body></html>"
         );
         doc = inline_kf8_images(data, offs, first_image, &doc);
         doc = strip_kindle_refs(&doc);
         Ok(doc)
+    }
+
+    /// Trimmed text of a section's `<title>`, if it has meaningful content.
+    fn section_title(sec: &str) -> Option<String> {
+        static RE: OnceLock<Regex> = OnceLock::new();
+        let re = RE.get_or_init(|| Regex::new(r"(?is)<title[^>]*>(.*?)</title>").unwrap());
+        let raw = re.captures(sec)?.get(1)?.as_str();
+        let t = raw
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&#160;", " ")
+            .replace('\u{00a0}', " ");
+        let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+        (!t.is_empty() && t.len() < 200).then_some(t)
+    }
+
+    fn esc(s: &str) -> String {
+        s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
     }
 
     /// Just flow 0 (the skeleton+fragment text stream).
@@ -880,92 +1065,8 @@ mod kf8 {
         raw.to_vec()
     }
 
-    /// Base-32 (fallback decimal) id used by `kindle:embed:NNNN`.
-    fn embed_id(s: &str) -> Option<u32> {
-        u32::from_str_radix(s, 32).ok().or_else(|| s.parse().ok())
-    }
-
-    /// For a fixed-layout KF8 book, the ordered PalmDB record index of each
-    /// page's image. One entry per section; `None` where no image resolves.
-    pub fn page_image_records(
-        raw: &[u8],
-        data: &[u8],
-        offs: &[usize],
-        r0: &[u8],
-        first_image: usize,
-    ) -> Vec<Option<usize>> {
-        static EMBED: OnceLock<Regex> = OnceLock::new();
-        static FLOWLINK: OnceLock<Regex> = OnceLock::new();
-        static IDS: OnceLock<Regex> = OnceLock::new();
-        let embed_re = EMBED.get_or_init(|| Regex::new(r"kindle:embed:0*([0-9A-Za-z]+)").unwrap());
-        let flow_re = FLOWLINK.get_or_init(|| Regex::new(r"kindle:flow:0*([0-9]+)").unwrap());
-        let id_re = IDS.get_or_init(|| Regex::new(r#"\bid="([^"]+)""#).unwrap());
-
-        let Some(book) = reassemble(raw, data, offs, r0) else {
-            return Vec::new();
-        };
-        let all_css = book.flows.join("\n");
-        let to_rec = |id: u32| -> Option<usize> {
-            let r = first_image.checked_add(id as usize)?.checked_sub(1)?;
-            (r + 1 < offs.len()).then_some(r)
-        };
-
-        // In `css`, the first `kindle:embed` id inside the rule block for
-        // selector `#id` (selector must end there, not be a longer id).
-        let bg_embed = |css: &str, id: &str| -> Option<u32> {
-            let needle = format!("#{id}");
-            let mut from = 0;
-            while let Some(rel) = css[from..].find(&needle) {
-                let pos = from + rel;
-                from = pos + needle.len();
-                let after = &css[from..];
-                if after.starts_with(|c: char| c.is_alphanumeric() || c == '-' || c == '_') {
-                    continue;
-                }
-                let brace = match after.find('{') {
-                    Some(b) => b,
-                    None => continue,
-                };
-                let end = after[brace..].find('}').map(|e| brace + e).unwrap_or(after.len());
-                if let Some(c) = embed_re.captures(&after[brace..end]) {
-                    if let Some(v) = embed_id(&c[1]) {
-                        return Some(v);
-                    }
-                }
-            }
-            None
-        };
-
-        book.sections
-            .iter()
-            .map(|sec| {
-                let head = &sec[..sec.find("</head>").unwrap_or(sec.len())];
-                let body = body_inner(sec);
-                let linked: String = flow_re
-                    .captures_iter(head)
-                    .filter_map(|c| c[1].parse::<usize>().ok())
-                    .filter_map(|n| book.flows.get(n))
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join("\n");
-
-                for css in [linked.as_str(), all_css.as_str()] {
-                    for cap in id_re.captures_iter(body) {
-                        if let Some(v) = bg_embed(css, &cap[1]) {
-                            return to_rec(v);
-                        }
-                    }
-                }
-                embed_re
-                    .captures(body)
-                    .and_then(|c| embed_id(&c[1]))
-                    .and_then(to_rec)
-            })
-            .collect()
-    }
-
     /// Inner HTML of a `<body>…</body>`, or the whole string if there's no body.
-    fn body_inner(html: &str) -> &str {
+    pub fn body_inner(html: &str) -> &str {
         let Some(open) = html.find("<body") else { return html };
         let Some(gt) = html[open..].find('>') else { return html };
         let start = open + gt + 1;
@@ -976,7 +1077,7 @@ mod kf8 {
     }
 
     /// `kindle:embed:NNNN?mime=…` → data URI from the image record.
-    fn inline_kf8_images(data: &[u8], offs: &[usize], first_image: usize, html: &str) -> String {
+    pub fn inline_kf8_images(data: &[u8], offs: &[usize], first_image: usize, html: &str) -> String {
         static RE: OnceLock<Regex> = OnceLock::new();
         let re = RE.get_or_init(|| {
             Regex::new(r#"kindle:embed:0*([0-9A-Za-z]+)(\?mime=[^"'\s)]*)?"#).unwrap()
@@ -1003,7 +1104,7 @@ mod kf8 {
 
     /// Neutralise leftover `kindle:` URIs (internal position links, flow links)
     /// so they don't render as broken links in the single-document reader.
-    fn strip_kindle_refs(html: &str) -> String {
+    pub fn strip_kindle_refs(html: &str) -> String {
         static LINK: OnceLock<Regex> = OnceLock::new();
         static HREF: OnceLock<Regex> = OnceLock::new();
         let link = LINK.get_or_init(|| Regex::new(r#"<link[^>]*kindle:[^>]*>"#).unwrap());

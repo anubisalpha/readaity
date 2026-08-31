@@ -35,6 +35,7 @@ interface Props {
   onBooksChanged: (books: BookRow[]) => void;
   onOpenBook: (book: BookRow) => void;
   onToggleFavorite: (path: string) => void;
+  onMoveLibrary: (path: string, to: LibraryKind) => void;
   onClearBeingRead: (path: string) => void;
 }
 
@@ -54,6 +55,7 @@ export function Library({
   onBooksChanged,
   onOpenBook,
   onToggleFavorite,
+  onMoveLibrary,
   onClearBeingRead,
 }: Props) {
   // Which shelf is showing: the folder view, or a flat filtered shelf.
@@ -321,6 +323,8 @@ export function Library({
                             : "Remove from Favourites"
                         }
                         onToggleFavorite={() => onToggleFavorite(book.path)}
+                        library={library}
+                        onMoveLibrary={onMoveLibrary}
                         onDragStart={(e) => startDrag(e, book.path)}
                       />
                     ) : (
@@ -398,6 +402,8 @@ export function Library({
                       onRemove={() => onRemoveBook(book.path)}
                       removeTitle="Remove from library (keeps file on disk)"
                       onToggleFavorite={() => onToggleFavorite(book.path)}
+                      library={library}
+                      onMoveLibrary={onMoveLibrary}
                       onDragStart={(e) => startDrag(e, book.path)}
                     />
                   ) : (
@@ -547,6 +553,8 @@ function ReadyItem({
   onRemove,
   removeTitle,
   onToggleFavorite,
+  library,
+  onMoveLibrary,
   onDragStart,
 }: {
   book: BookRow;
@@ -555,9 +563,13 @@ function ReadyItem({
   onRemove: () => void;
   removeTitle: string;
   onToggleFavorite: () => void;
+  library: LibraryKind;
+  onMoveLibrary: (path: string, to: LibraryKind) => void;
   onDragStart: (e: React.DragEvent) => void;
 }) {
   const isEpub = book.format === "epub";
+  // A fixed-layout azw3 that scanned into Ebooks reads best in Comics.
+  const suggestComics = book.fixed_layout && library === "ebooks";
   const started = book.last_page > 0;
   // EPUB progress is per-mille (0–1000); comics/PDF are page indices.
   const pct = isEpub
@@ -584,6 +596,11 @@ function ReadyItem({
           <span className={`format-badge ${book.format}`}>
             {book.format.toUpperCase()}
           </span>
+          {book.fixed_layout && (
+            <span className="fl-badge" title="Fixed-layout (comic / picture book)">
+              ▣ comic
+            </span>
+          )}
         </div>
         <div className="shelf-meta">
           <span className="shelf-title">{book.title}</span>
@@ -604,6 +621,16 @@ function ReadyItem({
       >
         {book.favorite ? "★" : "☆"}
       </button>
+      {suggestComics && (
+        <button
+          className="tile-move"
+          onClick={() => onMoveLibrary(book.path, "comics")}
+          title="Move to your Comics library"
+          aria-label={`Move ${book.title} to Comics`}
+        >
+          → Comics
+        </button>
+      )}
       <button
         className="tile-remove"
         onClick={onRemove}

@@ -29,6 +29,7 @@ import {
   rescan,
   resumeIndexing,
   setFavorite,
+  setBookLibrary,
   setProgress,
   setSetting,
 } from "./lib/api";
@@ -218,6 +219,19 @@ function App() {
     [books, library],
   );
 
+  const handleMoveLibrary = useCallback(
+    async (path: string, to: LibraryKind) => {
+      // The book leaves this library's list.
+      setBooks((prev) => prev.filter((b) => b.path !== path));
+      try {
+        setBooks(sortBooks(await setBookLibrary(path, to, library)));
+      } catch (e) {
+        console.error("move library failed", e);
+      }
+    },
+    [library],
+  );
+
   const handleClearBeingRead = useCallback(
     async (path: string) => {
       setBooks((prev) =>
@@ -307,6 +321,7 @@ function App() {
           onBooksChanged={(bs) => setBooks(sortBooks(bs))}
           onOpenBook={handleOpenBook}
           onToggleFavorite={handleToggleFavorite}
+          onMoveLibrary={handleMoveLibrary}
           onClearBeingRead={handleClearBeingRead}
         />
       </div>
@@ -347,6 +362,11 @@ function App() {
               initialPage={openBook.last_page}
               onBack={back}
               onPageChange={handlePageChange}
+              suggestComics={openBook.fixed_layout && library === "ebooks"}
+              onMoveToComics={() => {
+                handleMoveLibrary(openBook.path, "comics");
+                back();
+              }}
             />
           )}
         </div>

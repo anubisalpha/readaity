@@ -53,43 +53,51 @@ the container:
      decode. Skeleton tag 1 = chunk count, tag 6 = [start,len]; chunk entry
      *name* = absolute insert offset, tag 6 = [_, len];
   4. for each skeleton, splice its chunks in by `insert - skel_start`;
-  5. concat every section's `<body>` inner as `<div class="kf8-section">`, emit
-     the CSS flows once as `<style>`, inline `kindle:embed:NNNN` images as data
-     URIs, neutralise leftover `kindle:pos:` links.
+  5. concat every section's `<body>` inner as `<div class="kf8-section" id="kf8-sN">`,
+     emit the CSS flows once as `<style>`, inline `kindle:embed:NNNN` images as
+     data URIs, neutralise leftover `kindle:pos:` links.
+  6. **Chapter TOC** (2026-08-31): `assemble()` also emits a hidden
+     `<nav id="kf8-toc">` of `<a href="#kf8-sN">` from each section's `<title>`
+     — boilerplate ("Book Title", "Cover", …) and titles repeated on ≥3 sections
+     are dropped. `HtmlReader` lifts it into a "☰ Contents" side panel and
+     `scrollIntoView`s the anchor. MOBI-6 NCX TOC still not done.
 
-  Tests (both `#[ignore]`, env-var gated):
-  - `kf8_real` — asserts on one file: `READAITY_KF8_FILE=<path> cargo test kf8_real -- --ignored`
-  - `kf8_dir` — batch health survey over a folder, writes rebuilt HTML to
-    `<dir>/_out/`: `READAITY_KF8_DIR=<dir> cargo test kf8_dir -- --ignored --nocapture`
+  Tests (`#[ignore]`, env-var gated): `kf8_real` (one file), `kf8_dir` (batch
+  survey → `<dir>/_out/`), `kf8_pages_dir` (fixed-layout page survey).
 
-  Verified across **27 real commercial azw3** (prose, illustrated classics,
-  image comics, huge multi-book collections): all parse with **zero UTF-8
-  replacement chars and zero un-inlined images**; prose spot-checked in a
-  browser renders clean. Small books with no FDST / no skel+frag tables fall
-  back to rendering flow 0 directly. No TOC/chapter nav yet (one scroll blob,
-  same as MOBI6). A couple of files reassemble into oddly few sections
-  (`The Magic of Oz` → 2) but with all text present — worth a look later.
+  Verified across **27 real commercial azw3**: all parse with **zero UTF-8
+  replacement chars and zero un-inlined images**; prose + chapter nav
+  spot-checked in the app. Small books with no FDST / no skel+frag tables fall
+  back to flow 0 directly. A couple of reflowable files reassemble into oddly
+  few `<div>` sections (`The Magic of Oz` → 2) but with all text present.
 
 ### 1b. Fixed-layout KF8 (comics / manga / picture books) — **done 2026-08-31**
 
 EXTH **122** `fixed-layout` == `"true"` (also EXTH 123 `book-type` = comic/children)
-marks a page-per-section image book. `mobi::meta()` reads it in a cheap record-0
-pass during the sweep and stores `books.fixed_layout`. Such books route to the
-**page-image pager** (`Reader` with `source="kf8"`), not the reflowable
-`HtmlReader`.
+marks a page-per-section book. `mobi::meta()` reads it in a cheap record-0 pass
+during the sweep → `books.fixed_layout`. Such books open in **`Kf8Reader`**
+(a page pager), not the reflowable `HtmlReader`.
 
-Page images: `mobi::page_images()` reassembles the KF8 once, then per section
-resolves the page image — an element `id` in the body whose CSS rule (scoped to
-that section's linked `kindle:flow`s) has `background-image: url(kindle:embed:N)`,
-else the first inline `kindle:embed`. Command `get_kf8_pages` returns them all;
-the pager caches the lot on open. Page count is 0 until the pager fills it in
-(a "deeper scan" could compute it earlier, but it's not worth the scan cost).
+**Rendering (revised 2026-08-31):** each page is the section's *actual* XHTML,
+not an extracted image — so positioned-text pages (a picture-book ToC) and
+image + text-overlay pages both render. `mobi::kf8_pages()` per section:
+- dims from `<meta viewport>` / `<body style="width:…px">`, else EXTH 126
+  `original-resolution`;
+- `prune_css()` keeps only the CSS rules whose `#id` / `.class` is on this page
+  (fixed-layout books share one book-wide stylesheet whose `#fsN-img {
+  background-image }` rules would otherwise pull *every* image into *every* page
+  — Dinosaurs went 499 MB → 17 MB, Coronavirus 464 → 34);
+- inline that page's `kindle:embed` images, neutralise `kindle:` refs.
+`Kf8Reader` renders the page in a `sandbox=""` iframe scaled (`transform:
+scale`) to fit. **Lazy:** `get_kf8_page_dims` triggers + caches the reassembly
+(`Kf8Cache` app-state, one book), `get_kf8_page(i)` fetches one page; the reader
+holds current ±1. Page count is 0 in the DB until the reader fills it in.
 
-Verified on 11 real fixed-layout azw3 (Marvel Infinite comics, Star Wars gift
-books, Usborne/《Coronavirus》picture books, Minecraft activity book, a Defiance
-guide): all detected, page images extract (Minecrafters drops 1 SVG-art page;
-Defiance repeats shared spread images across its 163 text-overlay pages). In-app:
-Dinosaurs Vs Aliens (PalmDOC) and Coronavirus (HUFF/CDIC) page correctly.
+Verified in-app on 11 real fixed-layout azw3 (Marvel/Silver Surfer comics, Star
+Wars gift books, Usborne/Coronavirus picture books, Minecraft activity book,
+Defiance guide): all pages render. Defiance (163 text-overlay pages sharing ~53
+spreads) still ~290 MB total in the cache — big but lazy-loaded so it's usable;
+a shared-image URL scheme would fix it properly.
 
 ### 2. HUFF/CDIC decompression — **done 2026-08-31** (`HuffCdic` in `mobi.rs`)
 
@@ -110,16 +118,17 @@ not a native parser. `.kfx` is deliberately not in `EBOOK_EXTS`.
 
 ### 4. TOC / chapter navigation
 
-MOBI6 chapter breaks live in INDX records; KF8 has a real NCX. Currently the whole
-book is one HTML blob with no chapter list; progress is scroll-only. Fine for MVP,
-noted for later.
+- **KF8** — done (gap 1, step 6): section-`<title>` list → "☰ Contents" panel.
+- **MOBI-6** — still nothing. Chapter breaks live in INDX / a real NCX; would
+  need INDX parsing + filepos→anchor mapping. Not started.
 
-## Suggested priority order
+## Still open
 
-1. ~~**Detect KF8-only azw3/azw**~~ — superseded.
-2. ~~**Full KF8 reader**~~ — **done 2026-08-31** (`mobi.rs` module `kf8`). Needs
-   testing against more real files; watch for the edges noted above.
-   Verify against real files with `C:\Python314\python.exe` per the project's
-   parsing-gotchas rule.
-3. **HUFF/CDIC** — nice-to-have, do when convenient.
-4. **KFX** — defer to the Calibre bridge; don't build native.
+- **MOBI-6 NCX TOC** (above).
+- **Fixed-layout image sharing** — Defiance-class books duplicate spread images
+  across pages; serve images by a per-book URL instead of inlining.
+- **Comic-azw3 folder model** — a book moved to Comics (`library_override`)
+  shows in Comics shelves but not the folder tree, since its folder isn't
+  registered under Comics. The folder-add "split libraries" prompt needs a
+  folder that can feed both libraries.
+- **HUFF/CDIC** — done. **KFX** — defer to the Calibre bridge; don't build native.

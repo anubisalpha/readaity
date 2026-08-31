@@ -195,6 +195,8 @@ pub fn open(db_path: &std::path::Path) -> Result<Connection, String> {
         ("favorite", "INTEGER NOT NULL DEFAULT 0"),
         ("last_opened", "INTEGER"),
         ("fixed_layout", "INTEGER NOT NULL DEFAULT 0"),
+        // User moved this book to a different library than its folder's.
+        ("library_override", "TEXT"),
     ] {
         let has: bool = conn
             .query_row(
@@ -533,10 +535,11 @@ pub fn upsert_discovered(
         Some(_) => {
             // Changed (or still pending): reset to discovered, drop stale metadata
             // but keep the old cover so the shelf doesn't flicker until re-swept.
+            // A user's library move (library_override) wins over the folder's.
             conn.execute(
                 "UPDATE books SET folder=?2, format=?3, title=?4, size=?5, mtime=?6,
-                    md5=NULL, page_count=0, status='discovered', error=NULL, library=?8,
-                    updated_at=?7
+                    md5=NULL, page_count=0, status='discovered', error=NULL,
+                    library=COALESCE(library_override, ?8), updated_at=?7
                  WHERE path=?1",
                 params![path, folder, format, title, size, mtime, now(), library],
             )
@@ -927,6 +930,28 @@ pub fn set_progress(conn: &Connection, path: &str, page: i64) -> Result<(), Stri
         "UPDATE books SET last_page = ?2 WHERE path = ?1",
         params![path, page],
     )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Move a book to a different library than its folder's (or `None` to clear the
+/// override and follow the folder again). Recorded so rescans keep the choice.
+pub fn set_book_library(
+    conn: &Connection,
+    path: &str,
+    library: Option<&str>,
+) -> Result<(), String> {
+    match library {
+        Some(lib) => conn.execute(
+            "UPDATE books SET library=?2, library_override=?2, updated_at=?3 WHERE path=?1",
+            params![path, lib, now()],
+        ),
+        None => conn.execute(
+            "UPDATE books SET library=(SELECT library FROM folders WHERE ?1 LIKE folder || '%'),
+                library_override=NULL, updated_at=?2 WHERE path=?1",
+            params![path, now()],
+        ),
+    }
     .map_err(|e| e.to_string())?;
     Ok(())
 }

@@ -192,6 +192,16 @@ export async function getCoverUrl(path: string): Promise<string | null> {
   return b64 ? `data:image/jpeg;base64,${b64}` : null;
 }
 
+/** Move a book to another library (comic-format azw3 → Comics). Returns the
+ *  current library's refreshed list. */
+export function setBookLibrary(
+  path: string,
+  to: string | null,
+  library: string,
+): Promise<BookRow[]> {
+  return invoke<BookRow[]>("set_book_library", { path, to, library });
+}
+
 /** Store a frontend-generated cover (base64 JPEG) if the book has none. */
 export function setCover(
   path: string,
@@ -208,9 +218,22 @@ export async function getPageUrl(path: string, index: number): Promise<string> {
   return `data:${page.mime};base64,${page.base64}`;
 }
 
-/** Every page image of a fixed-layout KF8 book (comic / picture book). */
-export function getKf8Pages(path: string): Promise<PageData[]> {
-  return invoke<PageData[]>("get_kf8_pages", { path });
+/** One fixed-layout KF8 page: a self-contained HTML doc sized to w×h CSS px. */
+export interface Kf8Page {
+  html: string;
+  w: number;
+  h: number;
+}
+
+/** Page dimensions for a fixed-layout KF8 book — `[w, h]` per page. Triggers
+ *  (and caches) the reassembly; pages themselves load lazily. */
+export function getKf8PageDims(path: string): Promise<[number, number][]> {
+  return invoke<[number, number][]>("get_kf8_page_dims", { path });
+}
+
+/** One page of a fixed-layout KF8 book. */
+export function getKf8Page(path: string, index: number): Promise<Kf8Page> {
+  return invoke<Kf8Page>("get_kf8_page", { path, index });
 }
 
 /** Read an entire book file as base64 (for epub.js / pdf.js). */

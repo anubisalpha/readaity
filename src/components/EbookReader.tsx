@@ -3,7 +3,7 @@ import { PdfReader } from "./PdfReader";
 import { EpubReader } from "./EpubReader";
 import { HtmlReader } from "./HtmlReader";
 import { TxtReader } from "./TxtReader";
-import { Reader } from "./Reader";
+import { Kf8Reader } from "./Kf8Reader";
 import { getMobiHtml, getRtfHtml } from "../lib/api";
 
 interface Props {
@@ -11,10 +11,20 @@ interface Props {
   initialPage: number;
   onBack: () => void;
   onPageChange: (page: number) => void;
+  /** This is a fixed-layout book open in the Ebooks library — nudge to Comics. */
+  suggestComics?: boolean;
+  onMoveToComics?: () => void;
 }
 
 /** Routes an ebook to the right renderer by format. */
-export function EbookReader({ book, initialPage, onBack, onPageChange }: Props) {
+export function EbookReader({
+  book,
+  initialPage,
+  onBack,
+  onPageChange,
+  suggestComics,
+  onMoveToComics,
+}: Props) {
   if (book.format === "pdf") {
     return (
       <PdfReader
@@ -82,15 +92,16 @@ export function EbookReader({ book, initialPage, onBack, onPageChange }: Props) 
     );
   }
 
-  // Fixed-layout KF8 (comic / manga / picture book) → page-image pager.
+  // Fixed-layout KF8 (comic / manga / picture book) → page pager.
   if (book.fixed_layout) {
     return (
-      <Reader
+      <Kf8Reader
         book={book}
         initialPage={initialPage}
-        source="kf8"
         onBack={onBack}
         onPageChange={onPageChange}
+        suggestComics={suggestComics}
+        onMoveToComics={onMoveToComics}
       />
     );
   }

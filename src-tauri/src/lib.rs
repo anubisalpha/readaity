@@ -525,20 +525,47 @@ async fn get_page(path: String, index: usize) -> Result<PageData, String> {
         .map_err(|e| e.to_string())?
 }
 
-/// Every page image of a fixed-layout KF8 book (comic / picture book), in
-/// reading order, base64-encoded. One reassembly of the container.
+/// One reassembled fixed-layout KF8 book, cached so paging doesn't re-decompress
+/// the whole container. Holds a single book (the one currently open).
+#[derive(Default)]
+struct Kf8Cache(std::sync::Mutex<Option<(String, std::sync::Arc<Vec<mobi::Kf8Page>>)>>);
+
+fn kf8_book(app: &AppHandle, path: &str) -> Result<std::sync::Arc<Vec<mobi::Kf8Page>>, String> {
+    let cache = app.state::<Kf8Cache>();
+    if let Some((p, pages)) = &*cache.0.lock().map_err(|e| e.to_string())? {
+        if p == path {
+            return Ok(pages.clone());
+        }
+    }
+    let pages = std::sync::Arc::new(mobi::kf8_pages(path)?);
+    *cache.0.lock().map_err(|e| e.to_string())? = Some((path.to_string(), pages.clone()));
+    Ok(pages)
+}
+
+/// The page dimensions of a fixed-layout KF8 book (one `[w, h]` per page). Builds
+/// and caches the reassembly; page HTML is fetched lazily via `get_kf8_page`.
 #[tauri::command]
-async fn get_kf8_pages(path: String) -> Result<Vec<PageData>, String> {
+async fn get_kf8_page_dims(app: AppHandle, path: String) -> Result<Vec<[u32; 2]>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        mobi::page_images(&path).map(|pages| {
-            pages
-                .into_iter()
-                .map(|(mime, bytes)| PageData {
-                    mime,
-                    base64: base64::engine::general_purpose::STANDARD.encode(bytes),
-                })
-                .collect()
-        })
+        kf8_book(&app, &path).map(|pages| pages.iter().map(|p| [p.w, p.h]).collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// One page of a fixed-layout KF8 book, as a sized self-contained HTML document.
+#[tauri::command]
+async fn get_kf8_page(
+    app: AppHandle,
+    path: String,
+    index: usize,
+) -> Result<mobi::Kf8Page, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let pages = kf8_book(&app, &path)?;
+        pages
+            .get(index)
+            .cloned()
+            .ok_or_else(|| format!("page {index} out of range"))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -587,6 +614,24 @@ fn set_favorite(
         let db = app.state::<AppDb>();
         let conn = db.0.lock().map_err(|e| e.to_string())?;
         db::set_favorite(&conn, &path, favorite)?;
+    }
+    list_books(app, library)
+}
+
+/// Move a book to another library (e.g. a comic-format azw3 that scanned into
+/// Ebooks → Comics). `to = null` clears the override and follows the folder.
+/// Returns the *current* library's refreshed list.
+#[tauri::command]
+fn set_book_library(
+    app: AppHandle,
+    path: String,
+    to: Option<String>,
+    library: String,
+) -> Result<Vec<BookRow>, String> {
+    {
+        let db = app.state::<AppDb>();
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        db::set_book_library(&conn, &path, to.as_deref())?;
     }
     list_books(app, library)
 }
@@ -710,6 +755,7 @@ pub fn run() {
             let path = db_path(&app.handle()).map_err(|e| e.to_string())?;
             let (conn, recovered) = db::open_resilient(&path).map_err(|e| e.to_string())?;
             app.manage(AppDb(Mutex::new(conn)));
+            app.manage(Kf8Cache::default());
             app.manage(Sweeping(AtomicBool::new(false)));
             app.manage(Paused(AtomicBool::new(false)));
             app.manage(share::ShareState::default());
@@ -765,12 +811,14 @@ pub fn run() {
             set_cover,
             read_book_bytes,
             get_mobi_html,
-            get_kf8_pages,
+            get_kf8_page_dims,
+            get_kf8_page,
             get_rtf_html,
             get_text_content,
             get_page,
             set_progress,
             set_favorite,
+            set_book_library,
             mark_opened,
             clear_being_read,
             pause_indexing,
