@@ -58,45 +58,42 @@ function fmtTime(unix: number): string {
   return new Date(unix * 1000).toLocaleString();
 }
 
-/** "Scan to open" — one QR per reachable URL. */
-function QrCodes({ urls }: { urls: string[] }) {
-  const [svgs, setSvgs] = useState<Record<string, string>>({});
+/** "Scan to open" — a QR for the chosen share URL. */
+function QrCodes({ url }: { url: string }) {
+  const [svg, setSvg] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    Promise.all(urls.map((u) => shareQr(u).then((svg) => [u, svg] as const)))
-      .then((pairs) => {
-        if (!cancelled) setSvgs(Object.fromEntries(pairs));
-      })
+    setSvg(null);
+    shareQr(url)
+      .then((s) => !cancelled && setSvg(s))
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [open, urls]);
+  }, [open, url]);
 
   return (
     <div className="sharing-qr">
       <button className="btn ghost small" onClick={() => setOpen((v) => !v)}>
-        {open ? "Hide QR codes" : "Show QR codes"}
+        {open ? "Hide QR code" : "Show QR code"}
       </button>
       {open && (
         <div className="sharing-qr-grid">
-          {urls.map((u) => (
-            <figure key={u}>
-              {svgs[u] ? (
-                <span
-                  className="qr-img"
-                  // QR SVG is generated locally by our own Rust command.
-                  dangerouslySetInnerHTML={{ __html: svgs[u] }}
-                />
-              ) : (
-                <span className="qr-img qr-loading">…</span>
-              )}
-              <figcaption>{u}</figcaption>
-            </figure>
-          ))}
+          <figure>
+            {svg ? (
+              <span
+                className="qr-img"
+                // QR SVG is generated locally by our own Rust command.
+                dangerouslySetInnerHTML={{ __html: svg }}
+              />
+            ) : (
+              <span className="qr-img qr-loading">…</span>
+            )}
+            <figcaption>{url}</figcaption>
+          </figure>
         </div>
       )}
     </div>
@@ -118,6 +115,7 @@ export function SharingSettings() {
   const [auditOn, setAuditOn] = useState(true);
   const [maxConn, setMaxConn] = useState("0");
   const [rateKbps, setRateKbps] = useState("0");
+  const [selectedUrl, setSelectedUrl] = useState("");
   const [pin, setPin] = useState("");
   const [showTrust, setShowTrust] = useState(false);
 
@@ -143,6 +141,13 @@ export function SharingSettings() {
   useEffect(() => {
     loadAll().catch((e) => setErr(String(e)));
   }, [loadAll]);
+
+  // Keep the chosen address valid as the URL list changes; default to the
+  // best-ranked one (first in the list).
+  useEffect(() => {
+    const urls = status?.urls ?? [];
+    if (urls.length && !urls.includes(selectedUrl)) setSelectedUrl(urls[0]);
+  }, [status?.urls, selectedUrl]);
 
   // While the server runs, refresh status + audit every few seconds.
   useEffect(() => {
@@ -234,7 +239,11 @@ export function SharingSettings() {
     return <p className="settings-empty">Loading…</p>;
   }
 
-  const primaryUrl = status.urls[0];
+  // The user picks which LAN address to hand out when the machine has several;
+  // the list already arrives best-first (192.168 → 10 → …), so urls[0] is the
+  // sensible default.
+  const primaryUrl =
+    status.urls.find((u) => u === selectedUrl) ?? status.urls[0];
 
   return (
     <div className="sharing">
@@ -271,14 +280,26 @@ export function SharingSettings() {
           )}
         </div>
         {status.running && status.urls.length > 1 && (
-          <ul className="sharing-urls">
-            {status.urls.map((u) => (
-              <li key={u}>{u}</li>
-            ))}
-          </ul>
+          <div className="sharing-field">
+            <span className="settings-field-label">Address to share</span>
+            <select
+              className="sharing-input"
+              value={primaryUrl}
+              onChange={(e) => setSelectedUrl(e.target.value)}
+            >
+              {status.urls.map((u) => (
+                <option key={u} value={u}>
+                  {u}
+                </option>
+              ))}
+            </select>
+            <span className="settings-hint">
+              Pick the one on the same network as the other device.
+            </span>
+          </div>
         )}
-        {status.running && status.urls.length > 0 && (
-          <QrCodes urls={status.urls} />
+        {status.running && primaryUrl && (
+          <QrCodes url={primaryUrl} />
         )}
       </div>
 

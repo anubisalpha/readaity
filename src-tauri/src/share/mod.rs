@@ -164,6 +164,25 @@ pub fn regenerate_cert(app: &AppHandle) -> Result<String, String> {
 
 // ---------- LAN addresses ----------
 
+/// Rank a LAN address by how likely it is the one a person wants to hand out:
+/// a home/office `192.168.x` first, then `10.x`, then `172.16–31.x`, then any
+/// other private range, with APIPA `169.254.x` link-local last.
+fn ip_rank(ip: &IpAddr) -> u8 {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            match (o[0], o[1]) {
+                (192, 168) => 0,
+                (10, _) => 1,
+                (172, b) if (16..=31).contains(&b) => 2,
+                (169, 254) => 4,
+                _ => 3,
+            }
+        }
+        IpAddr::V6(_) => 5,
+    }
+}
+
 pub(crate) fn lan_ips() -> Vec<IpAddr> {
     let mut v = Vec::new();
     if let Ok(list) = local_ip_address::list_afinet_netifas() {
@@ -173,6 +192,8 @@ pub(crate) fn lan_ips() -> Vec<IpAddr> {
             }
         }
     }
+    v.sort_by_key(ip_rank);
+    v.dedup();
     if v.is_empty() {
         v.push(IpAddr::V4(Ipv4Addr::LOCALHOST));
     }
@@ -289,6 +310,26 @@ pub fn status(app: &AppHandle) -> ShareStatus {
         urls,
         fingerprint,
         pin_set: cfg.pin_set,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ip_rank;
+    use std::net::IpAddr;
+
+    #[test]
+    fn lan_addresses_rank_192_then_10_then_link_local() {
+        let mut ips: Vec<IpAddr> = ["169.254.5.5", "10.0.0.3", "192.168.1.10", "172.20.1.1"]
+            .iter()
+            .map(|s| s.parse().unwrap())
+            .collect();
+        ips.sort_by_key(ip_rank);
+        let ordered: Vec<String> = ips.iter().map(|i| i.to_string()).collect();
+        assert_eq!(
+            ordered,
+            ["192.168.1.10", "10.0.0.3", "172.20.1.1", "169.254.5.5"]
+        );
     }
 }
 
