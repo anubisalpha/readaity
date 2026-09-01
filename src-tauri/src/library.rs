@@ -72,6 +72,10 @@ pub fn quick_scan(conn: &Connection, library: &str, folders: &[String]) -> Resul
 
     let mut needs_sweep = 0;
     for folder in folders {
+        // One transaction per folder: thousands of individual auto-committed
+        // INSERTs in WAL mode means thousands of fsyncs, which is what makes a
+        // multi-thousand-file folder take minutes. Batched, it's seconds.
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
         let mut seen: Vec<String> = Vec::new();
         for entry in WalkDir::new(folder)
             .follow_links(false)
@@ -111,6 +115,7 @@ pub fn quick_scan(conn: &Connection, library: &str, folders: &[String]) -> Resul
             }
         }
         db::prune_missing(conn, folder, library, &seen)?;
+        tx.commit().map_err(|e| e.to_string())?;
     }
     Ok(needs_sweep)
 }
@@ -799,6 +804,42 @@ mod tests {
         // A title matching neither falls back to a neutral, still-listed folder.
         let s2 = suggest_folders(&conn, "ebooks", "The Hobbit", "epub");
         assert_eq!(s2.len(), 2, "every folder is offered");
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// Timing check: a folder with several thousand files must scan quickly
+    /// (batched into one transaction). Run with `cargo test large_folder -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn large_folder_quick_scan_is_fast() {
+        let base = std::env::temp_dir().join(format!("readaity_big_{}", std::process::id()));
+        let lib = base.join("comics");
+        std::fs::create_dir_all(&lib).unwrap();
+
+        let n = 4000;
+        for i in 0..n {
+            std::fs::write(lib.join(format!("Book {i:05}.cbz")), b"not a real zip").unwrap();
+        }
+
+        let conn = db::open(&base.join("library.db")).unwrap();
+        let folder = lib.to_str().unwrap().to_string();
+        db::add_folder(&conn, &folder, "tree", "comics").unwrap();
+
+        let t = std::time::Instant::now();
+        let needs = quick_scan(&conn, "comics", &[folder.clone()]).unwrap();
+        let elapsed = t.elapsed();
+        eprintln!("quick_scan of {n} files: {elapsed:?} ({needs} to sweep)");
+
+        assert_eq!(needs, n);
+        assert_eq!(db::list_books(&conn, "comics").unwrap().len(), n);
+        assert!(elapsed.as_secs() < 10, "scan took too long: {elapsed:?}");
+
+        // Re-scan cost (these fake files never validate, so they re-queue —
+        // we're only timing the walk + upsert path here).
+        let t2 = std::time::Instant::now();
+        quick_scan(&conn, "comics", &[folder]).unwrap();
+        eprintln!("rescan: {:?}", t2.elapsed());
 
         std::fs::remove_dir_all(&base).ok();
     }

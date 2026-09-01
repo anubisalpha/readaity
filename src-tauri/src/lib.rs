@@ -136,23 +136,29 @@ struct ImportItem {
 /// Copy each file into its chosen library folder, then rescan those folders so
 /// the new books are catalogued and swept.
 #[tauri::command]
-fn import_books(
+async fn import_books(
     app: AppHandle,
     items: Vec<ImportItem>,
     library: String,
 ) -> Result<Vec<BookRow>, String> {
-    let mut dests: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for it in &items {
-        library::import_one(&it.path, &it.dest)?;
-        dests.insert(it.dest.clone());
-    }
-    {
-        let db = app.state::<AppDb>();
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        for d in &dests {
-            library::quick_scan(&conn, &library, &[d.clone()])?;
-        }
-    }
+    let job = {
+        let app = app.clone();
+        let library = library.clone();
+        tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+            let mut dests: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for it in &items {
+                library::import_one(&it.path, &it.dest)?;
+                dests.insert(it.dest.clone());
+            }
+            let db = app.state::<AppDb>();
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            for d in &dests {
+                library::quick_scan(&conn, &library, &[d.clone()])?;
+            }
+            Ok(())
+        })
+    };
+    job.await.map_err(|e| e.to_string())??;
     app.state::<Paused>().0.store(false, Ordering::SeqCst);
     start_sweep(app.clone());
     list_books(app, library)
@@ -161,19 +167,27 @@ fn import_books(
 /// Phase 1 for one new folder, then kick off the background validity sweep.
 /// Returns the current book list immediately (discovered rows show as placeholders).
 #[tauri::command]
-fn add_folder(
+async fn add_folder(
     app: AppHandle,
     path: String,
     mode: String,
     library: String,
 ) -> Result<Vec<BookRow>, String> {
     emit_status(&app, "scanning", 0, 0);
-    {
-        let db = app.state::<AppDb>();
-        let conn = db.0.lock().map_err(|e| e.to_string())?;
-        db::add_folder(&conn, &path, &mode, &library)?;
-        library::quick_scan(&conn, &library, &[path])?;
-    }
+    // Phase 1 walks the whole tree and touches the DB once per file — for a
+    // folder with thousands of files that's seconds of work, so keep it off the
+    // main thread or the window goes "Not Responding".
+    let job = {
+        let app = app.clone();
+        let library = library.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let db = app.state::<AppDb>();
+            let conn = db.0.lock().map_err(|e| e.to_string())?;
+            db::add_folder(&conn, &path, &mode, &library)?;
+            library::quick_scan(&conn, &library, &[path])
+        })
+    };
+    job.await.map_err(|e| e.to_string())??;
     app.state::<Paused>().0.store(false, Ordering::SeqCst); // adding = index now
     start_sweep(app.clone());
     list_books(app, library)
