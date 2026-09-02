@@ -37,21 +37,32 @@ function rank(format: string): number {
   return FORMAT_RANK[format] ?? 50;
 }
 
-/** Normalise a title for match purposes: lower-case, strip diacritics, drop a
- *  DRM-removal tool's trailing "_nodrm" / "- no drm" marker (the EPUB copy an
- *  Epubor/DeDRM export leaves gets it, the AZW3 doesn't — otherwise the pair
- *  never matches), fold whitespace/underscores, drop a trailing "(...)" /
- *  "[...]" qualifier and any edge punctuation. */
+/** A DRM-removal tool's trailing marker — the EPUB copy an Epubor/DeDRM export
+ *  leaves gets "_nodrm", the AZW3 doesn't. Stripped for both matching and
+ *  display so a pair lines up and the shelf never shows the wart. */
+const NODRM_TAIL = /[\s_-]*no[\s_-]?drm\s*$/i;
+
+/** Normalise a title for match purposes: lower-case, strip diacritics, drop the
+ *  "_nodrm" marker, fold whitespace/underscores, trim edge punctuation. A
+ *  trailing "(...)" qualifier is kept — it often distinguishes editions
+ *  ("(2020 Edition)") or entries in different series ("(Exodus Trilogy Book 1)"
+ *  vs "(Dead Planet Series Book 1)"). */
 export function normalizeTitle(title: string): string {
   return title
     .normalize("NFKD")
     .replace(/[̀-ͯ]/g, "")
     .toLowerCase()
-    .replace(/[\s_-]*no[\s_-]?drm\s*$/, "")
-    .replace(/[\(\[][^\)\]]*[\)\]]\s*$/, "")
+    .replace(NODRM_TAIL, "")
     .replace(/[\s_]+/g, " ")
     .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")
     .trim();
+}
+
+/** The title as shown on a shelf tile — the real title minus the "_nodrm"
+ *  marker and any underscore/space it leaves dangling. */
+export function displayTitle(title: string): string {
+  const t = title.replace(NODRM_TAIL, "").replace(/[\s_]+$/, "");
+  return t || title;
 }
 
 /** A shelf tile: one primary book plus any same-title alternate-format files. */
@@ -92,8 +103,13 @@ function makeBundle(members: BookRow[]): BookBundle {
   );
   return {
     // Surface bundle-wide state on the primary so the tile reflects any member
-    // being favourited / opened.
-    primary: { ...base, favorite: anyFav, last_opened: lastOpened },
+    // being favourited / opened, and show a clean title.
+    primary: {
+      ...base,
+      title: displayTitle(base.title),
+      favorite: anyFav,
+      last_opened: lastOpened,
+    },
     members: ordered,
     formats: ordered.map((m) => m.format.toUpperCase()),
     paths: ordered.map((m) => m.path),
