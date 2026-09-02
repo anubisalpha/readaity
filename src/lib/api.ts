@@ -2,6 +2,7 @@
 // these so the IPC surface stays in one place.
 
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AuditRow,
@@ -24,6 +25,11 @@ import type {
   ShareStatus,
   VerifyReport,
 } from "../types";
+
+/** The app version from tauri.conf.json (e.g. "0.8.0"). */
+export function appVersion(): Promise<string> {
+  return getVersion();
+}
 
 /** Open the native folder picker. Returns null if cancelled. */
 export function pickFolder(): Promise<string | null> {

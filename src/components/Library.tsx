@@ -11,6 +11,7 @@ import { Cover } from "./Cover";
 import { Sidebar } from "./Sidebar";
 import { MoveDialog } from "./MoveDialog";
 import { moveItems, planMove } from "../lib/api";
+import { bundleBooks, bundlesInView, type BookBundle } from "../lib/bundle";
 import {
   ancestors,
   buildTree,
@@ -105,19 +106,24 @@ export function Library({
     [books, folders, cwd],
   );
 
-  // Flat shelves — favourites and recently-opened, for the current library.
+  // Library-wide bundles: same title, different format, collapsed to one tile
+  // even across folders. Computed once from the whole list, then filtered per
+  // view / shelf.
+  const allBundles = useMemo(() => bundleBooks(books), [books]);
+
+  // Flat shelves — favourites and recently-opened — as bundles.
   const favorites = useMemo(
-    () => books.filter((b) => b.favorite),
-    [books],
+    () => allBundles.filter((bd) => bd.members.some((m) => m.favorite)),
+    [allBundles],
   );
   const beingRead = useMemo(
     () =>
-      books
-        .filter((b) => b.last_opened != null)
-        .sort((a, b) => (b.last_opened ?? 0) - (a.last_opened ?? 0)),
-    [books],
+      allBundles
+        .filter((bd) => bd.members.some((m) => m.last_opened != null))
+        .sort((a, b) => (b.primary.last_opened ?? 0) - (a.primary.last_opened ?? 0)),
+    [allBundles],
   );
-  const shelfBooks = shelf === "favorites" ? favorites : beingRead;
+  const shelfBundles = shelf === "favorites" ? favorites : beingRead;
 
   // Leave a flat shelf and go back to the folder tree.
   const goFolder = (path: string | null) => {
@@ -134,13 +140,29 @@ export function Library({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [anchor, setAnchor] = useState<string | null>(null);
 
+  // Bundles with at least one file filed under the current directory. A bundle
+  // whose formats span folders shows in each folder it has a file in.
+  const hereBundles = useMemo(() => {
+    const here = new Set(view.booksHere.map((b) => b.path));
+    return bundlesInView(allBundles, (p) => here.has(p));
+  }, [allBundles, view]);
+  const viewBundles = useMemo(
+    () => hereBundles.filter((bd) => bd.ready),
+    [hereBundles],
+  );
+  const viewPending = useMemo(
+    () => hereBundles.filter((bd) => !bd.ready),
+    [hereBundles],
+  );
+
   // Ordered paths in the current view (folders first, then books) for Shift-range.
   const orderedPaths = useMemo(
     () => [
       ...view.subfolders.map((f) => f.path),
-      ...view.booksHere.map((b) => b.path),
+      ...viewBundles.map((b) => b.primary.path),
+      ...viewPending.map((b) => b.primary.path),
     ],
-    [view],
+    [view, viewBundles, viewPending],
   );
 
   const clearSel = () => {
@@ -210,9 +232,14 @@ export function Library({
     collisions: { src: string; name: string }[];
   } | null>(null);
 
-  const startDrag = (e: React.DragEvent, path: string) => {
-    // Drag the whole selection if the grabbed tile is part of it; else just it.
-    const sources = selected.has(path) ? [...selected] : [path];
+  const startDrag = (
+    e: React.DragEvent,
+    path: string,
+    group: string[] = [path],
+  ) => {
+    // Drag the whole selection if the grabbed tile is part of it; else the
+    // whole bundle behind the grabbed tile.
+    const sources = selected.has(path) ? [...selected] : group;
     if (!selected.has(path)) setSelected(new Set(sources));
     setDragging(sources);
     e.dataTransfer.effectAllowed = "move";
@@ -298,9 +325,11 @@ export function Library({
             <>
               <h2 className="shelf-heading">
                 {shelf === "favorites" ? "Favourites" : "Being Read"}
-                <span className="shelf-heading-count">{shelfBooks.length}</span>
+                <span className="shelf-heading-count">
+                  {shelfBundles.length}
+                </span>
               </h2>
-              {shelfBooks.length === 0 ? (
+              {shelfBundles.length === 0 ? (
                 <div className="empty-inline">
                   {shelf === "favorites"
                     ? "No favourites in this library yet. Tap the star on a book to add one."
@@ -308,30 +337,37 @@ export function Library({
                 </div>
               ) : (
                 <div className="shelf">
-                  {shelfBooks.map((book) =>
-                    book.status === "ready" ? (
-                      <ReadyItem
-                        key={book.path}
-                        book={book}
-                        selected={false}
-                        onActivate={(e) => activateBook(e, book)}
-                        onRemove={
-                          shelf === "beingRead"
-                            ? () => onClearBeingRead(book.path)
-                            : () => onToggleFavorite(book.path)
-                        }
-                        removeTitle={
-                          shelf === "beingRead"
-                            ? "Remove from Being Read"
-                            : "Remove from Favourites"
-                        }
-                        onToggleFavorite={() => onToggleFavorite(book.path)}
-                        library={library}
-                        onMoveLibrary={onMoveLibrary}
-                        onDragStart={(e) => startDrag(e, book.path)}
+                  {shelfBundles.map((bundle) =>
+                    !bundle.ready ? (
+                      <PendingItem
+                        key={bundle.primary.path}
+                        book={bundle.primary}
                       />
                     ) : (
-                      <PendingItem key={book.path} book={book} />
+                    <ReadyItem
+                      key={bundle.primary.path}
+                      bundle={bundle}
+                      selected={false}
+                      onActivate={(e) => activateBook(e, bundle.primary)}
+                      onRemove={
+                        shelf === "beingRead"
+                          ? () => onClearBeingRead(bundle.primary.path)
+                          : () => onToggleFavorite(bundle.primary.path)
+                      }
+                      removeTitle={
+                        shelf === "beingRead"
+                          ? "Remove from Being Read"
+                          : "Remove from Favourites"
+                      }
+                      onToggleFavorite={() =>
+                        onToggleFavorite(bundle.primary.path)
+                      }
+                      library={library}
+                      onMoveLibrary={onMoveLibrary}
+                      onDragStart={(e) =>
+                        startDrag(e, bundle.primary.path, bundle.paths)
+                      }
+                    />
                     ),
                   )}
                 </div>
@@ -395,24 +431,30 @@ export function Library({
                     onDropFolder={dropOnFolder}
                   />
                 ))}
-                {view.booksHere.map((book) =>
-                  book.status === "ready" ? (
-                    <ReadyItem
-                      key={book.path}
-                      book={book}
-                      selected={selected.has(book.path)}
-                      onActivate={(e) => activateBook(e, book)}
-                      onRemove={() => onRemoveBook(book.path)}
-                      removeTitle="Remove from library (keeps file on disk)"
-                      onToggleFavorite={() => onToggleFavorite(book.path)}
-                      library={library}
-                      onMoveLibrary={onMoveLibrary}
-                      onDragStart={(e) => startDrag(e, book.path)}
-                    />
-                  ) : (
-                    <PendingItem key={book.path} book={book} />
-                  ),
-                )}
+                {viewBundles.map((bundle) => (
+                  <ReadyItem
+                    key={bundle.primary.path}
+                    bundle={bundle}
+                    selected={selected.has(bundle.primary.path)}
+                    onActivate={(e) => activateBook(e, bundle.primary)}
+                    onRemove={async () => {
+                      for (const p of bundle.paths) await onRemoveBook(p);
+                    }}
+                    removeTitle="Remove from library (keeps file on disk)"
+                    onToggleFavorite={() => onToggleFavorite(bundle.primary.path)}
+                    library={library}
+                    onMoveLibrary={onMoveLibrary}
+                    onDragStart={(e) =>
+                      startDrag(e, bundle.primary.path, bundle.paths)
+                    }
+                  />
+                ))}
+                {viewPending.map((bundle) => (
+                  <PendingItem
+                    key={bundle.primary.path}
+                    book={bundle.primary}
+                  />
+                ))}
               </div>
             </>
           )}
@@ -550,7 +592,7 @@ function FolderItem({
 }
 
 function ReadyItem({
-  book,
+  bundle,
   selected,
   onActivate,
   onRemove,
@@ -560,7 +602,7 @@ function ReadyItem({
   onMoveLibrary,
   onDragStart,
 }: {
-  book: BookRow;
+  bundle: BookBundle;
   selected: boolean;
   onActivate: (e: React.MouseEvent) => void;
   onRemove: () => void;
@@ -570,6 +612,7 @@ function ReadyItem({
   onMoveLibrary: (path: string, to: LibraryKind) => void;
   onDragStart: (e: React.DragEvent) => void;
 }) {
+  const book = bundle.primary;
   const isEpub = book.format === "epub";
   // A fixed-layout azw3 that scanned into Ebooks reads best in Comics.
   const suggestComics = book.fixed_layout && library === "ebooks";
@@ -596,8 +639,19 @@ function ReadyItem({
       <button className="book-open" onClick={onActivate} title={book.title}>
         <div className="cover-wrap">
           <Cover path={book.path} title={book.title} format={book.format} />
-          <span className={`format-badge ${book.format}`}>
-            {book.format.toUpperCase()}
+          <span
+            className="format-badges"
+            title={
+              bundle.formats.length > 1
+                ? `${bundle.formats.join(", ")} — opens as ${bundle.formats[0]}`
+                : undefined
+            }
+          >
+            {bundle.members.map((m) => (
+              <span key={m.format} className={`format-badge ${m.format}`}>
+                {m.format.toUpperCase()}
+              </span>
+            ))}
           </span>
           {book.fixed_layout && (
             <span className="fl-badge" title="Fixed-layout (comic / picture book)">

@@ -46,6 +46,7 @@ import {
 } from "./lib/api";
 import { AppHeader } from "./components/AppHeader";
 import { Library } from "./components/Library";
+import { Footer } from "./components/Footer";
 import { Reader } from "./components/Reader";
 import { EbookReader } from "./components/EbookReader";
 import { AddFolderDialog } from "./components/AddFolderDialog";
@@ -409,6 +410,8 @@ function App() {
           onClearBeingRead={handleClearBeingRead}
           onOpenNetwork={() => setNetworkOpen(true)}
         />
+
+        <Footer status={status} onOpenNetwork={() => setNetworkOpen(true)} />
       </div>
 
       {pendingAdd && (
